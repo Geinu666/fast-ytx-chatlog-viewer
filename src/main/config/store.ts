@@ -1,14 +1,14 @@
 import { app } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { AppConfig } from '../../shared/types'
+import type { AppConfig, SourceSelection } from '../../shared/types'
 
 /**
  * 应用配置持久化：存放于 userData/config.json。
  * 记录用户额外添加的扫描目录与数据库文件，以及上次使用的数据源。
  */
 
-const EMPTY: AppConfig = { dataDirs: [], dataFiles: [], lastSource: null }
+const EMPTY: AppConfig = { dataDirs: [], dataFiles: [], lastSelection: null }
 
 let cache: AppConfig | null = null
 
@@ -31,14 +31,26 @@ function sanitizePathList(value: unknown, limit: number): string[] {
 
 export function sanitizeConfig(value: unknown): AppConfig {
   const input = value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
-  const lastSource =
-    typeof input.lastSource === 'string' && input.lastSource.trim().length > 0
-      ? input.lastSource.trim().slice(0, 1024)
-      : null
+
+  let lastSelection: SourceSelection | null = null
+  const raw = input.lastSelection
+  if (raw && typeof raw === 'object') {
+    const candidate = raw as Record<string, unknown>
+    const kind = candidate.kind
+    const path = candidate.path
+    if (
+      (kind === 'file' || kind === 'dir') &&
+      typeof path === 'string' &&
+      path.trim().length > 0
+    ) {
+      lastSelection = { kind, path: path.trim().slice(0, 1024) }
+    }
+  }
+
   return {
     dataDirs: sanitizePathList(input.dataDirs, 50),
     dataFiles: sanitizePathList(input.dataFiles, 200),
-    lastSource
+    lastSelection
   }
 }
 
@@ -69,9 +81,10 @@ export function saveConfig(value: unknown): AppConfig {
   return next
 }
 
-/** 记录上次使用的数据源 */
-export function rememberSource(sourcePath: string | null): void {
+/** 记录上次使用的数据源范围 */
+export function rememberSelection(selection: SourceSelection): void {
   const config = loadConfig()
-  if (config.lastSource === sourcePath) return
-  saveConfig({ ...config, lastSource: sourcePath })
+  const last = config.lastSelection
+  if (last && last.kind === selection.kind && last.path === selection.path) return
+  saveConfig({ ...config, lastSelection: selection })
 }

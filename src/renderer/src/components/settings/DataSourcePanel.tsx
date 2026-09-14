@@ -1,14 +1,38 @@
-import { AlertTriangle, CheckCircle2, Database, Loader2, RefreshCw, ShieldCheck, X } from 'lucide-react'
+import { useMemo } from 'react'
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Database,
+  FileText,
+  FolderTree,
+  Layers,
+  Loader2,
+  RefreshCw,
+  ShieldCheck,
+  X
+} from 'lucide-react'
+import type { DbSource } from '@shared/types'
 import { cn } from '@renderer/lib/cn'
-import { formatBytes, formatDateTime } from '@renderer/lib/format'
+import { formatBytes, formatCount, formatDateTime } from '@renderer/lib/format'
 import { useIndexStore } from '@renderer/store/useIndexStore'
 import { useUiStore } from '@renderer/store/useUiStore'
 import { ScanSourcesSection } from './ScanSourcesSection'
+
+const dirnameOf = (path: string): string => path.replace(/[\\/][^\\/]*$/, '')
+
+interface DirGroup {
+  dir: string
+  files: DbSource[]
+  newest: number
+  total: number
+}
 
 /** 数据源与索引管理浮层 */
 export function DataSourcePanel() {
   const sources = useIndexStore((state) => state.sources)
   const status = useIndexStore((state) => state.status)
+  const config = useIndexStore((state) => state.config)
+  const defaultDirs = useIndexStore((state) => state.defaultDirs)
   const selectSource = useIndexStore((state) => state.selectSource)
   const rebuild = useIndexStore((state) => state.rebuild)
   const refreshSources = useIndexStore((state) => state.refreshSources)
@@ -18,10 +42,47 @@ export function DataSourcePanel() {
 
   const building = status?.phase === 'building'
   const busy = initializing || building
+  const activeDir = status?.selectionKind === 'dir' ? status.selectionPath : null
+  const activeFile = status?.selectionKind === 'file' ? status.selectionPath : null
 
-  const handleSelect = async (path: string): Promise<void> => {
-    if (path === status?.sourcePath || busy) return
-    await selectSource(path)
+  const dirGroups = useMemo<DirGroup[]>(() => {
+    const dirs = new Set<string>(defaultDirs)
+    for (const dir of config?.dataDirs ?? []) dirs.add(dir)
+    for (const source of sources) dirs.add(dirnameOf(source.path))
+
+    const byDir = new Map<string, DbSource[]>()
+    for (const source of sources) {
+      if (!source.valid) continue
+      const dir = dirnameOf(source.path)
+      byDir.set(dir, [...(byDir.get(dir) ?? []), source])
+    }
+
+    return [...dirs]
+      .map((dir) => {
+        const files = byDir.get(dir) ?? []
+        return {
+          dir,
+          files,
+          newest: files.reduce((max, file) => Math.max(max, file.newestTimestamp), 0),
+          total: files.reduce((sum, file) => sum + file.messageCount, 0)
+        }
+      })
+      .sort(
+        (a, b) =>
+          b.newest - a.newest || b.files.length - a.files.length || a.dir.localeCompare(b.dir)
+      )
+  }, [sources, defaultDirs, config])
+
+  const handleSelectDir = async (group: DirGroup): Promise<void> => {
+    if (busy || group.files.length === 0) return
+    if (activeDir?.toLowerCase() === group.dir.toLowerCase()) return
+    await selectSource({ kind: 'dir', path: group.dir })
+  }
+
+  const handleSelectFile = async (source: DbSource): Promise<void> => {
+    if (busy || !source.valid) return
+    if (activeFile?.toLowerCase() === source.path.toLowerCase()) return
+    await selectSource({ kind: 'file', path: source.path })
   }
 
   return (
@@ -33,7 +94,7 @@ export function DataSourcePanel() {
         onClick={close}
       />
 
-      <div className="glass-card relative flex max-h-[84vh] w-full max-w-[760px] animate-fade-up flex-col overflow-hidden">
+      <div className="glass-card relative flex max-h-[86vh] w-full max-w-[820px] animate-fade-up flex-col overflow-hidden">
         <header className="flex items-center gap-2 border-b border-line/10 px-4 py-3">
           <Database size={15} className="text-brand-cyan" />
           <span className="text-subheading">数据源与索引</span>
@@ -44,6 +105,7 @@ export function DataSourcePanel() {
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+          {/* 索引状态 */}
           <section className="mb-4">
             <div className="mb-2 flex items-center gap-2">
               <h3 className="text-micro text-ink-600">索引状态</h3>
@@ -82,19 +144,41 @@ export function DataSourcePanel() {
                 </div>
               )}
 
-              {status?.buildMs != null && (
-                <p className="mt-2 text-micro text-ink-600">
-                  上次构建耗时 {(status.buildMs / 1000).toFixed(2)} 秒
-                </p>
-              )}
+              <dl className="mt-2.5 flex flex-col gap-1 text-micro">
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="shrink-0 text-ink-600">当前范围</dt>
+                  <dd className="min-w-0 truncate text-ink-400" title={status?.selectionPath ?? ''}>
+                    {status?.selectionPath
+                      ? `${status.selectionKind === 'dir' ? '目录（合并）' : '单个文件'} · ${status.selectionPath}`
+                      : '—'}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="shrink-0 text-ink-600">参与合并</dt>
+                  <dd className="text-ink-400">{status?.includedFiles.length ?? 0} 个数据库</dd>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="shrink-0 text-ink-600">重复去重</dt>
+                  <dd className="text-ink-400">
+                    {status?.duplicateMessages ? `${formatCount(status.duplicateMessages)} 条` : '无'}
+                  </dd>
+                </div>
+                {status?.buildMs != null && (
+                  <div className="flex items-center justify-between gap-3">
+                    <dt className="shrink-0 text-ink-600">构建耗时</dt>
+                    <dd className="text-ink-400">{(status.buildMs / 1000).toFixed(2)} 秒</dd>
+                  </div>
+                )}
+              </dl>
             </div>
           </section>
 
           <ScanSourcesSection />
 
+          {/* 数据源 */}
           <section className="mb-4">
             <div className="mb-2 flex items-center gap-2">
-              <h3 className="text-micro text-ink-600">发现的数据源</h3>
+              <h3 className="text-micro text-ink-600">数据源</h3>
               <button
                 type="button"
                 className="btn ml-auto"
@@ -106,27 +190,81 @@ export function DataSourcePanel() {
               </button>
             </div>
 
-            <div className="flex flex-col gap-2">
+            <p className="mb-2 flex items-center gap-1.5 rounded-lg border border-brand-indigo/25 bg-brand-indigo/8 px-3 py-2 text-micro leading-5 text-ink-400">
+              <Layers size={12} className="shrink-0 text-brand-indigo" />
+              选择「目录」即可查看该目录下**全部数据库**合并去重后的聊天记录；选择单个文件则只看该库。
+              同一消息按 ID 去重，保留数据较新那份的版本。
+            </p>
+
+            <h4 className="mb-1.5 mt-3 flex items-center gap-1.5 text-micro text-ink-600">
+              <FolderTree size={11} /> 按目录合并
+            </h4>
+            <div className="flex flex-col gap-1.5">
+              {dirGroups.map((group) => {
+                const active = activeDir?.toLowerCase() === group.dir.toLowerCase()
+                const disabled = group.files.length === 0 || busy
+                return (
+                  <button
+                    key={group.dir}
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => void handleSelectDir(group)}
+                    className={cn(
+                      'flex flex-col gap-1 rounded-xl border px-3 py-2 text-left transition-all duration-200',
+                      active
+                        ? 'border-brand-indigo/50 bg-brand-indigo/15'
+                        : 'border-line/10 bg-surface-900/45',
+                      !disabled && !active && 'hover:border-brand-cyan/35',
+                      disabled && 'cursor-not-allowed opacity-55'
+                    )}
+                  >
+                    <span className="flex items-center gap-2">
+                      <FolderTree size={12} className="shrink-0 text-brand-cyan" />
+                      <span className="truncate text-body text-ink-100">{group.dir}</span>
+                      {active && (
+                        <span className="shrink-0 rounded-full bg-brand-indigo/30 px-1.5 text-micro text-ink-100">
+                          使用中
+                        </span>
+                      )}
+                      <span className="ml-auto shrink-0 text-micro text-ink-600">
+                        {group.files.length > 0 ? `${group.files.length} 个库` : '无可用库'}
+                      </span>
+                    </span>
+                    {group.files.length > 0 && (
+                      <span className="text-micro text-ink-600">
+                        合计 {formatCount(group.total)} 条消息 · 最新数据{' '}
+                        {formatDateTime(group.newest)}
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+
+            <h4 className="mb-1.5 mt-3 flex items-center gap-1.5 text-micro text-ink-600">
+              <FileText size={11} /> 单个文件
+            </h4>
+            <div className="flex flex-col gap-1.5">
               {sources.length === 0 && (
                 <p className="rounded-xl border border-line/10 bg-surface-900/50 p-3 text-micro leading-5 text-ink-600">
-                  未发现可用的聊天记录库。请确认猿通讯已登录过（默认存放于
-                  %APPDATA%\boctx），或用上方「添加文件 / 添加目录」手动指定后重新扫描。
+                  未发现可用的聊天记录库。请确认猿通讯已登录过（默认存放于 %APPDATA%\boctx），
+                  或用上方「添加文件 / 添加目录」手动指定后重新扫描。
                 </p>
               )}
-
               {sources.map((source) => {
-                const active = source.path === status?.sourcePath
+                const active = activeFile?.toLowerCase() === source.path.toLowerCase()
                 return (
                   <button
                     key={source.path}
                     type="button"
                     disabled={!source.valid || busy}
-                    onClick={() => void handleSelect(source.path)}
+                    onClick={() => void handleSelectFile(source)}
                     className={cn(
-                      'flex flex-col gap-1.5 rounded-xl border px-3 py-2.5 text-left transition-all duration-200',
+                      'flex flex-col gap-1 rounded-xl border px-3 py-2 text-left transition-all duration-200',
                       active
                         ? 'border-brand-indigo/50 bg-brand-indigo/15'
-                        : 'border-line/10 bg-surface-900/45 hover:border-brand-cyan/35',
+                        : 'border-line/10 bg-surface-900/45',
+                      source.valid && !busy && !active && 'hover:border-brand-cyan/35',
                       (!source.valid || busy) && 'cursor-not-allowed opacity-60'
                     )}
                   >
@@ -156,12 +294,10 @@ export function DataSourcePanel() {
                         {formatBytes(source.sizeBytes)}
                       </span>
                     </span>
-                    <span className="truncate text-micro text-ink-600" title={source.path}>
-                      {source.path}
-                    </span>
                     <span className="text-micro text-ink-600">
-                      修改时间 {formatDateTime(source.modifiedAt)}
-                      {source.error ? ` · ${source.error}` : ''}
+                      {source.valid
+                        ? `${formatCount(source.messageCount)} 条消息 · 最新 ${formatDateTime(source.newestTimestamp)}`
+                        : source.error}
                     </span>
                   </button>
                 )
@@ -175,9 +311,9 @@ export function DataSourcePanel() {
             </h3>
             <p className="text-micro leading-5 text-ink-400">
               应用以只读方式打开原始聊天记录数据库，不会写入、修改或删除任何源文件。
-              解码与规范化后的数据仅写入用户数据目录下的索引缓存，用于加速检索；
-              源库文件大小或修改时间变化时会自动重建缓存。
-              扫描来源与上次使用的数据源记录在用户数据目录的 <code>config.json</code> 中。
+              合并与去重结果仅写入用户数据目录下的索引缓存，用于加速检索；参与合并的
+              任一文件大小或修改时间变化时会自动重建缓存。扫描来源与上次使用范围记录在
+              用户数据目录的 <code>config.json</code> 中。
             </p>
           </section>
         </div>

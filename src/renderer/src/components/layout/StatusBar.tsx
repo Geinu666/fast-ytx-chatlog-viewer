@@ -24,6 +24,14 @@ export function StatusBar() {
       <span className="hidden xl:inline">
         索引缓存 <b className="text-ink-400">{formatBytes(status?.cacheSizeBytes ?? 0)}</b>
       </span>
+      {(status?.includedFiles.length ?? 0) > 1 && (
+        <span className="hidden lg:inline">
+          合并 <b className="text-brand-cyan">{status?.includedFiles.length}</b> 个库
+          {status?.duplicateMessages
+            ? ` · 去重 ${formatCount(status.duplicateMessages)}`
+            : ''}
+        </span>
+      )}
       <span className="hidden lg:inline">
         查询耗时 <b className="text-ink-400">{lastQueryMs ? `${lastQueryMs} ms` : '—'}</b>
       </span>

@@ -100,13 +100,19 @@ function sanitizeChatQuery(raw: unknown): ChatQuery {
 export function registerDataHandlers(): void {
   ipcMain.handle(IPC.dbListSources, () => indexService.listSources())
 
-  ipcMain.handle(IPC.dbSelectSource, (_event, rawPath: unknown) => {
-    const target = asString(rawPath, 1024)
-    if (!target) throw new Error('无效的数据源路径')
-    return indexService.selectSource(target)
+  ipcMain.handle(IPC.dbSelectSource, (_event, raw: unknown) => {
+    const input = asRecord(raw)
+    const kind = input.kind
+    const path = asString(input.path, 1024)
+    if ((kind !== 'file' && kind !== 'dir') || !path) {
+      throw new Error('无效的数据源范围')
+    }
+    return indexService.selectSource({ kind, path })
   })
 
   ipcMain.handle(IPC.indexStatus, () => indexService.getStatus())
+
+  ipcMain.handle(IPC.indexEnsure, () => indexService.ensureReady())
 
   ipcMain.handle(IPC.indexRebuild, () => indexService.rebuild())
 

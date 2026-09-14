@@ -6,7 +6,8 @@ import type {
   ChatQuery,
   DbSource,
   IndexStatus,
-  MessageQuery
+  MessageQuery,
+  SourceSelection
 } from '../shared/types'
 
 /**
@@ -14,9 +15,10 @@ import type {
  */
 const api: ChatLogApi = {
   listSources: (): Promise<DbSource[]> => ipcRenderer.invoke(IPC.dbListSources),
-  selectSource: (path: string): Promise<IndexStatus> =>
-    ipcRenderer.invoke(IPC.dbSelectSource, path),
+  selectSource: (selection: SourceSelection): Promise<IndexStatus> =>
+    ipcRenderer.invoke(IPC.dbSelectSource, selection),
   indexStatus: (): Promise<IndexStatus> => ipcRenderer.invoke(IPC.indexStatus),
+  ensureIndex: (): Promise<IndexStatus> => ipcRenderer.invoke(IPC.indexEnsure),
   rebuildIndex: (): Promise<IndexStatus> => ipcRenderer.invoke(IPC.indexRebuild),
   onIndexProgress: (cb: (status: IndexStatus) => void): (() => void) => {
     const listener = (_event: unknown, status: IndexStatus): void => cb(status)

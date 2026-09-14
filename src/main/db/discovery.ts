@@ -2,7 +2,7 @@ import { app } from 'electron'
 import Database from 'better-sqlite3'
 import { existsSync, readdirSync, statSync, type Dirent } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
-import type { DbSource } from '../../shared/types'
+import type { DbSource, SourceSelection } from '../../shared/types'
 import { loadConfig } from '../config/store'
 
 /**
@@ -93,7 +93,9 @@ function inspect(filePath: string, origin: DbSource['origin'], inBoctx: boolean)
     valid: false,
     tableCount: 0,
     origin,
-    inBoctx
+    inBoctx,
+    messageCount: 0,
+    newestTimestamp: 0
   }
 
   let db: Database.Database | null = null
@@ -107,6 +109,11 @@ function inspect(filePath: string, origin: DbSource['origin'], inBoctx: boolean)
     const missing = REQUIRED_TABLES.filter((name) => !tables.includes(name))
     if (missing.length === 0) {
       source.valid = true
+      const stat2 = db
+        .prepare('SELECT COUNT(*) AS total, IFNULL(MAX(timestamp), 0) AS newest FROM message_list')
+        .get() as { total: number; newest: number }
+      source.messageCount = stat2.total
+      source.newestTimestamp = stat2.newest
     } else {
       source.error = `缺少数据表：${missing.join('、')}`
     }
@@ -119,9 +126,17 @@ function inspect(filePath: string, origin: DbSource['origin'], inBoctx: boolean)
   return source
 }
 
-/** 用户配置的来源优先；其次约定文件名、猿通讯目录、修改时间 */
+/**
+ * 排序即合并优先级：越靠前越优先（同 ID 消息保留靠前源库的版本）。
+ *
+ * 依次比较：用户配置来源 → 库内数据最新（MAX(timestamp)）→ 约定文件名 →
+ * 猿通讯目录 → 文件修改时间。
+ */
 export function compareSources(a: DbSource, b: DbSource): number {
   if (a.origin !== b.origin) return a.origin === 'configured' ? -1 : 1
+
+  // 数据新鲜度：以库内最新消息时间为准，比文件 mtime 更可靠
+  if (a.newestTimestamp !== b.newestTimestamp) return b.newestTimestamp - a.newestTimestamp
 
   const convA = CONVENTION_NAME.test(a.fileName) ? 1 : 0
   const convB = CONVENTION_NAME.test(b.fileName) ? 1 : 0
@@ -131,6 +146,41 @@ export function compareSources(a: DbSource, b: DbSource): number {
 
   if (a.modifiedAt !== b.modifiedAt) return b.modifiedAt - a.modifiedAt
   return a.fileName.localeCompare(b.fileName)
+}
+
+/** 直接检查单个文件（不依赖其是否位于扫描目录内） */
+export function sourceForFile(filePath: string): DbSource | null {
+  if (!existsSync(filePath)) return null
+  try {
+    const source = inspect(
+      filePath,
+      'configured',
+      filePath.toLowerCase().startsWith(boctxDir().toLowerCase())
+    )
+    return source.valid ? source : null
+  } catch {
+    return null
+  }
+}
+
+/** 收集指定目录下的全部可用数据库（递归），按合并优先级排序 */
+export function sourcesInDirectory(dir: string): DbSource[] {
+  const files: string[] = []
+  if (existsSync(dir)) {
+    collectDbFiles(dir, 0, { count: 0 }, (file) => files.push(file))
+  }
+
+  const boctx = boctxDir().toLowerCase()
+  const sources: DbSource[] = []
+  for (const file of files) {
+    try {
+      const source = inspect(file, 'configured', file.toLowerCase().startsWith(boctx))
+      if (source.valid) sources.push(source)
+    } catch {
+      // 无法读取的文件直接跳过
+    }
+  }
+  return sources.sort(compareSources)
 }
 
 interface ScanState {
@@ -214,16 +264,24 @@ export function discoverSources(): DbSource[] {
   return sources.sort(compareSources)
 }
 
-/** 挑选默认加载的数据源：优先恢复上次使用的，其次排序第一项 */
-export function pickDefaultSource(sources: DbSource[]): DbSource | null {
+/**
+ * 默认选择范围：优先恢复上次使用的范围；否则取「数据最新那个库所在目录」，
+ * 对同目录下的全部数据库做合并查看。
+ */
+export function pickDefaultSelection(sources: DbSource[]): SourceSelection | null {
   const valid = sources.filter((item) => item.valid)
   if (valid.length === 0) return null
 
-  const last = loadConfig().lastSource
+  const last = loadConfig().lastSelection
   if (last) {
-    const matched = valid.find((item) => item.path.toLowerCase() === last.toLowerCase())
-    if (matched) return matched
+    if (last.kind === 'file') {
+      const matched = valid.find((item) => item.path.toLowerCase() === last.path.toLowerCase())
+      if (matched) return { kind: 'file', path: matched.path }
+    } else if (existsSync(last.path)) {
+      if (sourcesInDirectory(last.path).length > 0) return { kind: 'dir', path: last.path }
+    }
   }
 
-  return valid[0]
+  // 默认：合并「数据最新」那个库所在目录下的全部数据库
+  return { kind: 'dir', path: dirname(valid[0].path) }
 }

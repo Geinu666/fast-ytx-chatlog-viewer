@@ -3,6 +3,7 @@ export const IPC = {
   dbListSources: 'db:listSources',
   dbSelectSource: 'db:selectSource',
   indexStatus: 'index:status',
+  indexEnsure: 'index:ensure',
   indexRebuild: 'index:rebuild',
   indexProgress: 'index:progress',
   configGet: 'config:get',

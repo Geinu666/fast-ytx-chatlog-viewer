@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AppConfig, DbSource, IndexStatus } from '@shared/types'
+import type { AppConfig, DbSource, IndexStatus, SourceSelection } from '@shared/types'
 
 interface IndexState {
   status: IndexStatus | null
@@ -13,7 +13,7 @@ interface IndexState {
   init: () => Promise<void>
   refreshSources: () => Promise<void>
   refreshConfig: () => Promise<void>
-  selectSource: (path: string) => Promise<void>
+  selectSource: (selection: SourceSelection) => Promise<void>
   rebuild: () => Promise<void>
   addDataDir: () => Promise<void>
   addDataFile: () => Promise<void>
@@ -40,15 +40,16 @@ export const useIndexStore = create<IndexState>((set, get) => ({
     unsubscribeProgress = window.api.onIndexProgress((status) => set({ status }))
 
     await get().refreshConfig()
+
     const [sources, status] = await Promise.all([
       window.api.listSources(),
       window.api.indexStatus()
     ])
     set({ sources, status })
 
-    if ((status.phase === 'idle' || status.phase === 'error') && sources.length > 0) {
-      const fallback = sources.find((item) => item.valid)
-      if (fallback) await get().selectSource(fallback.path)
+    // 主进程启动时已尝试过一次，这里兜底：仍未就绪则按默认规则加载
+    if (status.phase === 'idle' || status.phase === 'error') {
+      await autoLoad(get)
     }
   },
 
@@ -70,11 +71,11 @@ export const useIndexStore = create<IndexState>((set, get) => ({
     set({ config, defaultDirs })
   },
 
-  async selectSource(path: string) {
-    if (!path) return
+  async selectSource(selection: SourceSelection) {
+    if (!selection?.path) return
     set({ initializing: true })
     try {
-      const status = await window.api.selectSource(path)
+      const status = await window.api.selectSource(selection)
       set({ status })
     } finally {
       set({ initializing: false })
@@ -99,7 +100,9 @@ export const useIndexStore = create<IndexState>((set, get) => ({
     await window.api.saveConfig({ ...config, dataDirs: [...config.dataDirs, dir] })
     await get().refreshConfig()
     await get().refreshSources()
-    await autoLoad(get)
+    // 新增目录后，若尚未加载任何数据源则自动选中该目录（合并查看）
+    if (!isReady(get)) await get().selectSource({ kind: 'dir', path: dir })
+    else await autoLoad(get)
   },
 
   async addDataFile() {
@@ -110,7 +113,8 @@ export const useIndexStore = create<IndexState>((set, get) => ({
     await window.api.saveConfig({ ...config, dataFiles: [...config.dataFiles, file] })
     await get().refreshConfig()
     await get().refreshSources()
-    await autoLoad(get)
+    if (!isReady(get)) await get().selectSource({ kind: 'file', path: file })
+    else await autoLoad(get)
   },
 
   async removeDataDir(path: string) {
@@ -134,10 +138,13 @@ export const useIndexStore = create<IndexState>((set, get) => ({
   }
 }))
 
-/** 尚未加载任何数据源时，自动加载第一个可用项 */
+function isReady(get: () => IndexState): boolean {
+  return get().status?.phase === 'ready'
+}
+
+/** 尚未加载任何数据源时，让主进程按默认规则自动加载 */
 async function autoLoad(get: () => IndexState): Promise<void> {
-  const status = get().status
-  if (status && status.phase === 'ready') return
-  const fallback = get().sources.find((item) => item.valid)
-  if (fallback) await get().selectSource(fallback.path)
+  if (isReady(get)) return
+  const status = await window.api.ensureIndex()
+  if (status) useIndexStore.setState({ status })
 }

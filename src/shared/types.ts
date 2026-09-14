@@ -146,6 +146,18 @@ export interface DbSource {
   origin: 'configured' | 'default'
   /** 是否位于猿通讯默认数据目录（%APPDATA%\boctx）下 */
   inBoctx: boolean
+  /** 该库内消息条数（不可用时为 0） */
+  messageCount: number
+  /** 该库内最新一条消息的时间戳，用于判断数据新旧（0 表示未知） */
+  newestTimestamp: number
+}
+
+/** 数据源选择范围：单个文件，或某目录下的全部数据库（合并查看） */
+export type SelectionKind = 'file' | 'dir'
+
+export interface SourceSelection {
+  kind: SelectionKind
+  path: string
 }
 
 /** 用户可持久化的配置 */
@@ -154,14 +166,22 @@ export interface AppConfig {
   dataDirs: string[]
   /** 用户添加的单个数据库文件 */
   dataFiles: string[]
-  /** 上次使用的数据源，下次启动优先恢复 */
-  lastSource: string | null
+  /** 上次使用的数据源范围，下次启动优先恢复 */
+  lastSelection: SourceSelection | null
 }
 
 /** 索引缓存状态 */
 export interface IndexStatus {
   phase: 'idle' | 'building' | 'ready' | 'error'
-  sourcePath: string | null
+  /** 当前选择范围类型 */
+  selectionKind: SelectionKind | null
+  /** 当前选择范围路径（文件或目录） */
+  selectionPath: string | null
+  /** 实际参与合并的数据库文件（已按优先级排序） */
+  includedFiles: string[]
+  /** 合并时因消息 ID 重复而被跳过的条数 */
+  duplicateMessages: number
+  /** 展示用名称 */
   sourceName: string | null
   cachePath: string | null
   cacheSizeBytes: number
@@ -177,8 +197,11 @@ export interface IndexStatus {
 /** 渲染层可用的 IPC API 契约 */
 export interface ChatLogApi {
   listSources(): Promise<DbSource[]>
-  selectSource(path: string): Promise<IndexStatus>
+  /** 选择数据源范围：单个文件，或某目录下的全部数据库（合并） */
+  selectSource(selection: SourceSelection): Promise<IndexStatus>
   indexStatus(): Promise<IndexStatus>
+  /** 确保索引就绪：未加载时按默认规则（上次范围 / 数据最新目录）自动加载 */
+  ensureIndex(): Promise<IndexStatus>
   rebuildIndex(): Promise<IndexStatus>
   onIndexProgress(cb: (status: IndexStatus) => void): () => void
 
