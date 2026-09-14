@@ -6,10 +6,12 @@ interface UiState {
   theme: ThemeMode
   showFilters: boolean
   showDataSource: boolean
+  toast: string | null
   setTheme: (theme: ThemeMode) => void
   toggleTheme: () => void
   toggleFilters: () => void
   toggleDataSource: () => void
+  showToast: (message: string) => void
 }
 
 function applyTheme(theme: ThemeMode): void {
@@ -18,10 +20,13 @@ function applyTheme(theme: ThemeMode): void {
   root.classList.toggle('dark', theme === 'dark')
 }
 
+let toastTimer: ReturnType<typeof setTimeout> | null = null
+
 export const useUiStore = create<UiState>((set, get) => ({
   theme: 'dark',
   showFilters: true,
   showDataSource: false,
+  toast: null,
 
   setTheme(theme: ThemeMode) {
     applyTheme(theme)
@@ -38,5 +43,11 @@ export const useUiStore = create<UiState>((set, get) => ({
 
   toggleDataSource() {
     set({ showDataSource: !get().showDataSource })
+  },
+
+  showToast(message: string) {
+    if (toastTimer) clearTimeout(toastTimer)
+    set({ toast: message })
+    toastTimer = setTimeout(() => set({ toast: null }), 1800)
   }
 }))

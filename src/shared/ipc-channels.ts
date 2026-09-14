@@ -11,6 +11,7 @@ export const IPC = {
   messageContext: 'message:context',
   searchGlobal: 'search:global',
   filterFacets: 'filter:facets',
+  clipWrite: 'clip:write',
   winMinimize: 'win:minimize',
   winToggleMaximize: 'win:toggleMaximize',
   winClose: 'win:close',

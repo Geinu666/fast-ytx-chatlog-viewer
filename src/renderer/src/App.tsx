@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { ChatList } from './components/chat/ChatList'
+import { Toast } from './components/common/Toast'
 import { FilterPanel } from './components/filter/FilterPanel'
 import { StatusBar } from './components/layout/StatusBar'
 import { TitleBar } from './components/layout/TitleBar'
@@ -67,6 +68,8 @@ export default function App() {
       </main>
 
       <StatusBar />
+
+      <Toast />
 
       {searchOpen && <GlobalSearch />}
       {showDataSource && <DataSourcePanel />}

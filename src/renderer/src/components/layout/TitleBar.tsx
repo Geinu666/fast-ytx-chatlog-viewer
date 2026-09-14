@@ -28,7 +28,7 @@ export function TitleBar() {
         <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand-gradient shadow-glow">
           <Layers size={15} className="text-white" />
         </span>
-        <span className="text-subheading whitespace-nowrap">聊天记录查看器</span>
+        <span className="text-subheading whitespace-nowrap">猿通讯聊天记录查看器</span>
       </div>
 
       <span className="flex min-w-0 items-center gap-1.5 rounded-full border border-line/10 bg-surface-800/70 px-2.5 py-1 text-micro text-ink-400">

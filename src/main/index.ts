@@ -20,7 +20,7 @@ function createWindow(): BrowserWindow {
     show: false,
     frame: false,
     backgroundColor: '#0B0F1A',
-    title: '聊天记录查看器',
+    title: '猿通讯聊天记录查看器',
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { clipboard, ipcMain } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import type { ChatQuery, MessageKind, MessageQuery } from '../../shared/types'
 import { ChatRepository } from '../index-cache/repository'
@@ -17,6 +17,7 @@ const VALID_KINDS: MessageKind[] = [
 ]
 
 const MAX_KEYWORD_LENGTH = 200
+const MAX_CLIP_LENGTH = 200000
 
 function requireRepo(): ChatRepository {
   const repo = indexService.getRepository()
@@ -146,5 +147,14 @@ export function registerDataHandlers(): void {
       return { senders: [], kinds: [], dateRange: { from: '', to: '' } }
     }
     return requireRepo().facets(chatId)
+  })
+
+  // 消息右键复制：由主进程写入系统剪贴板
+  ipcMain.handle(IPC.clipWrite, (_event, rawText: unknown) => {
+    if (typeof rawText !== 'string') return false
+    const text = rawText.slice(0, MAX_CLIP_LENGTH)
+    if (!text) return false
+    clipboard.writeText(text)
+    return true
   })
 }

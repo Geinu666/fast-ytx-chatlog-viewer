@@ -15,6 +15,9 @@ export type MessageKind =
   | 'withdrawn'
   | 'unknown'
 
+/** 消息来源应用标识 */
+export const SOURCE_APP_NAME = '猿通讯'
+
 /** 会话类型 */
 export type ChatKind = 'single' | 'group' | 'unknown'
 
@@ -171,6 +174,8 @@ export interface ChatLogApi {
   messageContext(chatId: string, messageId: string, radius?: number): Promise<MessageItem[]>
   searchGlobal(query: MessageQuery): Promise<SearchResponse>
   filterFacets(chatId: string): Promise<FacetResponse>
+  /** 写入系统剪贴板（由主进程执行，返回是否成功） */
+  copyText(text: string): Promise<boolean>
 
   window: {
     minimize(): void

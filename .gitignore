@@ -22,6 +22,16 @@ Thumbs.db
 # runtime caches
 .cache/
 
+# 工具内部状态
+.codebuddy/
+
+# 归档文件（非源码）
+*.7z
+*.zip
+*.rar
+*.tar
+*.gz
+
 # chat log databases (raw data, never versioned)
 *.db
 *.db-journal

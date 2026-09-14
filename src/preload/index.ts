@@ -24,6 +24,7 @@ const api: ChatLogApi = {
     ipcRenderer.invoke(IPC.messageContext, chatId, messageId, radius),
   searchGlobal: (query: MessageQuery) => ipcRenderer.invoke(IPC.searchGlobal, query),
   filterFacets: (chatId: string) => ipcRenderer.invoke(IPC.filterFacets, chatId),
+  copyText: (text: string): Promise<boolean> => ipcRenderer.invoke(IPC.clipWrite, text),
 
   window: {
     minimize: (): void => ipcRenderer.send(IPC.winMinimize),
