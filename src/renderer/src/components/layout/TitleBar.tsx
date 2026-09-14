@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Database, Layers, Minus, Moon, Search, Square, Sun, X } from 'lucide-react'
+import { Database, Layers, Minus, Moon, RefreshCw, Search, Square, Sun, X } from 'lucide-react'
+import monkeyIcon from '@renderer/assets/monkey-pixel.png'
 import { cn } from '@renderer/lib/cn'
 import { useIndexStore } from '@renderer/store/useIndexStore'
 import { useSearchStore } from '@renderer/store/useSearchStore'
@@ -8,9 +9,12 @@ import { useUiStore } from '@renderer/store/useUiStore'
 /** 自定义无边框标题栏 */
 export function TitleBar() {
   const status = useIndexStore((state) => state.status)
+  const refreshNow = useIndexStore((state) => state.refreshNow)
+  const initializing = useIndexStore((state) => state.initializing)
   const openSearch = useSearchStore((state) => state.openPanel)
   const theme = useUiStore((state) => state.theme)
   const toggleTheme = useUiStore((state) => state.toggleTheme)
+  const showToast = useUiStore((state) => state.showToast)
   const toggleDataSource = useUiStore((state) => state.toggleDataSource)
   const toggleFilters = useUiStore((state) => state.toggleFilters)
   const showFilters = useUiStore((state) => state.showFilters)
@@ -25,9 +29,16 @@ export function TitleBar() {
   return (
     <header className="app-drag relative z-30 flex h-12 shrink-0 items-center gap-3 border-b border-line/10 bg-surface-900/80 px-3 backdrop-blur-xl">
       <div className="flex items-center gap-2.5">
-        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand-gradient shadow-glow">
-          <Layers size={15} className="text-white" />
-        </span>
+        {/* 应用图标：原图（猴子哭泣）转成的像素风格版本 */}
+        <img
+          src={monkeyIcon}
+          alt=""
+          width={36}
+          height={36}
+          draggable={false}
+          className="h-9 w-9 shrink-0 select-none drop-shadow-[0_0_8px_rgba(124,92,255,0.35)]"
+          style={{ imageRendering: 'pixelated' }}
+        />
         <span className="text-subheading whitespace-nowrap">猿通讯聊天记录查看器</span>
       </div>
 
@@ -37,6 +48,23 @@ export function TitleBar() {
       </span>
 
       <div className="app-no-drag ml-auto flex items-center gap-1.5">
+        <button
+          type="button"
+          className="btn"
+          disabled={initializing || status?.phase === 'building'}
+          onClick={() => {
+            void refreshNow().then((changed) =>
+              showToast(changed ? '索引已增量更新' : '已是最新，无需刷新')
+            )
+          }}
+          title="立即检测源库变化并增量刷新索引"
+        >
+          <RefreshCw
+            size={13}
+            className={cn((initializing || status?.phase === 'building') && 'animate-spin')}
+          />
+          刷新
+        </button>
         <button type="button" className="btn" onClick={openSearch} title="全局搜索">
           <Search size={13} />
           搜索

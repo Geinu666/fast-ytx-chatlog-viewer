@@ -91,6 +91,12 @@ const RE_IMG_SRC = /<img[^>]*\bsrc\s*=\s*["']([^"']+)["']/i
 const RE_IMG_TAG = /<img\b[^>]*>/i
 const RE_A_TAG = /<a\b[^>]*>/i
 const RE_ATTR = (name: string): RegExp => new RegExp(`<a\\b[^>]*\\b${name}\\s*=\\s*["']([^"']*)["']`, 'i')
+/**
+ * 本地缓存绝对路径：`<img path="...">` 与 `<a path="...">`。
+ * 属性顺序不定且 `path` 可能出现两次，取标签内第一个非空值即可。
+ */
+const RE_IMG_PATH = /<img\b[^>]*\bpath\s*=\s*["']([^"']*)["']/i
+const RE_A_PATH = /<a\b[^>]*\bpath\s*=\s*["']([^"']*)["']/i
 const RE_FILE_NAME = /<span[^>]*\bclass\s*=\s*["'][^"']*\bfile-name\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i
 const RE_QUOTE = /<div[^>]*\bclass\s*=\s*["'][^"']*\bchat-quote\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i
 const RE_AT_SPAN = /<span[^>]*\bcontenteditable\s*=\s*["']false["'][^>]*>([\s\S]*?)<\/span>/gi
@@ -105,6 +111,8 @@ export interface ParsedMessage {
   fileUrl?: string
   fileName?: string
   filePath?: string
+  /** 消息内容里记录的本地缓存绝对路径（`path` 属性），无则为空 */
+  localPath?: string
   atList?: string[]
   quoteText?: string
 }
@@ -114,6 +122,13 @@ function basename(p: string): string {
   const normalized = p.replace(/\\/g, '/')
   const idx = normalized.lastIndexOf('/')
   return idx >= 0 ? normalized.slice(idx + 1) : normalized
+}
+
+/** `path` 属性值归一化：脏值（undefined/null/空）返回 undefined */
+function normalizePathAttr(match: RegExpExecArray | null): string | undefined {
+  if (!match || !match[1]) return undefined
+  const value = match[1].trim()
+  return isBlank(value) ? undefined : value
 }
 
 function extractFileName(html: string): string {
@@ -138,19 +153,26 @@ function extractFileName(html: string): string {
 function parseFile(html: string): ParsedMessage {
   const fileName = extractFileName(html)
   const href = RE_ATTR('href').exec(html)
-  const pathAttr = RE_ATTR('path').exec(html)
+  const pathAttr = RE_A_PATH.exec(html)
+  const local = normalizePathAttr(pathAttr)
   return {
     kind: 'file',
     text: fileName || '[文件]',
     fileName: fileName || undefined,
     fileUrl: href && href[1] ? href[1] : undefined,
-    filePath: pathAttr && pathAttr[1] ? pathAttr[1] : undefined
+    filePath: local,
+    localPath: local
   }
 }
 
 function parseImage(html: string): ParsedMessage {
   const src = RE_IMG_SRC.exec(html)
-  return { kind: 'image', text: '[图片]', imageUrl: src ? src[1] : undefined }
+  return {
+    kind: 'image',
+    text: '[图片]',
+    imageUrl: src ? src[1] : undefined,
+    localPath: normalizePathAttr(RE_IMG_PATH.exec(html))
+  }
 }
 
 function parseAt(html: string): ParsedMessage {

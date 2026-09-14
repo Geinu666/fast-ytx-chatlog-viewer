@@ -3,8 +3,9 @@ import {
   AtSign,
   ExternalLink,
   FileText,
+  FolderOpen,
+  FolderSearch,
   ImageOff,
-  Loader2,
   Quote,
   Smile
 } from 'lucide-react'
@@ -12,6 +13,8 @@ import { parseMessageContent } from '@shared/content'
 import type { MessageItem } from '@shared/types'
 import { cn } from '@renderer/lib/cn'
 import { Highlight } from '@renderer/lib/highlight'
+import { localMediaUrl } from '@renderer/lib/localMedia'
+import { useUiStore } from '@renderer/store/useUiStore'
 
 interface MessageContentProps {
   item: MessageItem
@@ -38,21 +41,44 @@ function ExternalButton({ url }: { url: string }) {
   )
 }
 
-function ImageBlock({ url, keyword }: { url?: string; keyword?: string }) {
-  const [attempting, setAttempting] = useState(false)
-  const [failed, setFailed] = useState(false)
+function ImageBlock({
+  url,
+  localPath,
+  keyword
+}: {
+  url?: string
+  localPath?: string
+  keyword?: string
+}) {
+  // local：优先本地缓存；remote：回退远端链接；idle：无本地缓存待手动尝试；failed：均不可用
+  const [stage, setStage] = useState<'local' | 'remote' | 'idle' | 'failed'>(() =>
+    localPath ? 'local' : 'idle'
+  )
 
-  if (url && attempting && !failed) {
+  const src =
+    stage === 'local' && localPath ? localMediaUrl(localPath) : stage === 'remote' && url ? url : ''
+
+  const handleError = (): void => {
+    // 本地缓存读不到就自动回退远端；远端再失败才判定不可访问
+    setStage(stage === 'local' && url ? 'remote' : 'failed')
+  }
+
+  if (src) {
     return (
       <div className="flex flex-col gap-1.5">
         <img
-          src={url}
+          src={src}
           alt="聊天图片"
           loading="lazy"
-          onError={() => setFailed(true)}
+          onError={handleError}
           className="max-h-64 max-w-[320px] rounded-xl border border-line/10 object-contain"
         />
-        <span className="text-micro text-ink-600">{hostOf(url)}</span>
+        <span
+          className="max-w-[320px] truncate text-micro text-ink-600"
+          title={stage === 'local' ? localPath : src}
+        >
+          {stage === 'local' ? '本地缓存' : hostOf(src)}
+        </span>
       </div>
     )
   }
@@ -60,25 +86,27 @@ function ImageBlock({ url, keyword }: { url?: string; keyword?: string }) {
   return (
     <div className="flex w-[260px] flex-col gap-2 rounded-xl border border-line/10 bg-surface-900/50 p-3">
       <div className="flex items-center gap-2 text-ink-400">
-        {failed ? (
+        {stage === 'failed' ? (
           <ImageOff size={16} className="text-state-warn" />
         ) : (
           <Smile size={16} className="text-brand-cyan" />
         )}
         <span className="text-body">
-          <Highlight text={failed ? '[图片] 内网资源不可访问' : '[图片]'} keyword={keyword} />
+          <Highlight
+            text={stage === 'failed' ? '[图片] 本地与远端均不可访问' : '[图片]'}
+            keyword={keyword}
+          />
         </span>
       </div>
-      {url && <span className="truncate text-micro text-ink-600">{url}</span>}
+      {(localPath || url) && (
+        <span className="truncate text-micro text-ink-600" title={localPath || url}>
+          {localPath || url}
+        </span>
+      )}
       <div className="flex items-center gap-2">
-        {url && !failed && (
-          <button
-            type="button"
-            className="btn"
-            onClick={() => setAttempting(true)}
-            disabled={attempting}
-          >
-            {attempting ? <Loader2 size={11} className="animate-spin" /> : <Smile size={11} />}
+        {url && stage !== 'failed' && (
+          <button type="button" className="btn" onClick={() => setStage('remote')}>
+            <Smile size={11} />
             尝试加载图片
           </button>
         )}
@@ -90,33 +118,79 @@ function ImageBlock({ url, keyword }: { url?: string; keyword?: string }) {
 
 function FileBlock({
   fileName,
-  filePath,
+  localPath,
   fileUrl,
   keyword
 }: {
   fileName?: string
-  filePath?: string
+  localPath?: string
   fileUrl?: string
   keyword?: string
 }) {
-  const label = fileName || filePath?.split(/[\\/]/).pop() || '文件'
+  const showToast = useUiStore((state) => state.showToast)
+  const label = fileName || localPath?.split(/[\\/]/).pop() || '文件'
+
+  /** 打开本地缓存文件：缺失时仅提示，不回落远端链接 */
+  const openLocal = async (): Promise<void> => {
+    if (!localPath) {
+      showToast('本地缓存不存在')
+      return
+    }
+    const result = await window.api.openLocalFile(localPath)
+    if (!result.ok) showToast(result.error || '打开失败')
+  }
+
+  /** 打开所在目录并选中该文件 */
+  const revealLocal = async (): Promise<void> => {
+    if (!localPath) {
+      showToast('本地缓存不存在')
+      return
+    }
+    const result = await window.api.revealLocalFile(localPath)
+    if (!result.ok) showToast(result.error || '打开所在路径失败')
+  }
+
   return (
-    <div className="flex w-[280px] flex-col gap-2 rounded-xl border border-line/10 bg-surface-900/50 p-3">
+    <div
+      onDoubleClick={() => void openLocal()}
+      title={localPath ? `${localPath}（双击打开）` : '本地缓存不存在'}
+      className="flex w-[280px] flex-col gap-2 rounded-xl border border-line/10 bg-surface-900/50 p-3"
+    >
       <div className="flex items-center gap-2">
         <FileText size={16} className="shrink-0 text-brand-violet" />
         <span className="min-w-0 flex-1 truncate text-body text-ink-100">
           <Highlight text={label} keyword={keyword} />
         </span>
       </div>
-      {filePath && (
-        <span className="truncate text-micro text-ink-600" title={filePath}>
-          {filePath}
+      {localPath && (
+        <span className="truncate text-micro text-ink-600" title={localPath}>
+          {localPath}
         </span>
       )}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          className="btn"
+          onClick={() => void openLocal()}
+          title={localPath ? '用系统默认程序打开（双击卡片亦可）' : '本地缓存不存在'}
+        >
+          <FolderOpen size={11} />
+          打开
+        </button>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => void revealLocal()}
+          title={localPath ? '打开所在目录并选中该文件' : '本地缓存不存在'}
+        >
+          <FolderSearch size={11} />
+          打开文件所在路径
+        </button>
         {fileUrl && <ExternalButton url={fileUrl} />}
-        <span className="text-micro text-ink-600">{hostOf(fileUrl) || '本地文件'}</span>
       </div>
+      {!localPath && (
+        <span className="text-micro text-ink-600">数据库中未记录本地缓存路径</span>
+      )}
     </div>
   )
 }
@@ -161,14 +235,20 @@ export function MessageContent({ item, keyword }: MessageContentProps) {
   }
 
   if (parsed.kind === 'image') {
-    return <ImageBlock url={parsed.imageUrl} keyword={keyword} />
+    return (
+      <ImageBlock
+        url={parsed.imageUrl}
+        localPath={item.localPath || parsed.localPath}
+        keyword={keyword}
+      />
+    )
   }
 
   if (parsed.kind === 'file') {
     return (
       <FileBlock
         fileName={parsed.fileName}
-        filePath={parsed.filePath}
+        localPath={item.localPath || parsed.localPath}
         fileUrl={parsed.fileUrl}
         keyword={keyword}
       />

@@ -3,7 +3,7 @@ import Database from 'better-sqlite3'
 import { basename } from 'node:path'
 import { IPC } from '../../shared/ipc-channels'
 import type { DbSource, IndexStatus, SourceSelection } from '../../shared/types'
-import { loadConfig, rememberSelection, saveConfig } from '../config/store'
+import { clampAutoRefreshSec, loadConfig, rememberSelection, saveConfig } from '../config/store'
 import {
   collapseSnapshotChains,
   discoverSources,
@@ -14,7 +14,7 @@ import {
 } from '../db/discovery'
 import { ensureStats } from '../db/stats'
 import { buildIndex, isCacheCurrent, removeCache, type BuildResult } from './builder'
-import { cachePathForScope, fileSize, fingerprintFor } from './cache-key'
+import { cachePathForScope, fileKey, fileSize, fingerprintFor } from './cache-key'
 import { ChatRepository } from './repository'
 
 /**
@@ -42,7 +42,16 @@ const EMPTY_STATUS: IndexStatus = {
   progress: 0,
   processed: 0,
   total: 0,
-  message: '尚未加载数据源'
+  message: '尚未加载数据源',
+  revision: 0,
+  refreshedAt: 0
+}
+
+/** 计算文件集合的指纹串（路径 + 大小 + 修改时间），用于判断源库是否变化 */
+function fingerprintKey(paths: string[]): string {
+  return fingerprintFor(paths)
+    .map((file) => fileKey(file))
+    .join('|')
 }
 
 class IndexService {
@@ -52,6 +61,10 @@ class IndexService {
   private pending: Promise<IndexStatus> | null = null
   private selection: SourceSelection | null = null
   private statsRunning = false
+  /** 自动增量刷新定时器 */
+  private refreshTimer: NodeJS.Timeout | null = null
+  /** 上次成功加载后的源库指纹串，用于自动刷新时快速判断有无变化 */
+  private lastFingerprintKey: string | null = null
 
   getStatus(): IndexStatus {
     return {
@@ -127,6 +140,46 @@ class IndexService {
   }
 
   /**
+   * 立即触发一次增量刷新（手动 / 定时共用）。
+   *
+   * 先比对当前范围内源库的指纹（路径 + 大小 + 修改时间）：未变化则直接返回，
+   * 不重开数据库、不发状态、不产生任何抖动；有变化时复用 load() 走行级增量构建。
+   */
+  async refresh(): Promise<IndexStatus> {
+    if (this.pending || !this.selection || !this.repo) return this.getStatus()
+    if (fingerprintKey(this.status.includedFiles) === this.lastFingerprintKey) {
+      return this.getStatus()
+    }
+    return this.load(this.selection)
+  }
+
+  /** 按配置装载 / 重载自动刷新定时器（关闭时清空） */
+  applyAutoRefresh(): void {
+    if (this.refreshTimer) {
+      clearTimeout(this.refreshTimer)
+      this.refreshTimer = null
+    }
+    const config = loadConfig()
+    if (config.autoRefreshEnabled === false) return
+
+    const seconds = clampAutoRefreshSec(config.autoRefreshIntervalSec)
+    this.refreshTimer = setTimeout(() => {
+      void this.tickRefresh()
+    }, seconds * 1000)
+    // 定时器不应阻止进程退出
+    this.refreshTimer.unref?.()
+  }
+
+  private async tickRefresh(): Promise<void> {
+    try {
+      await this.refresh()
+    } finally {
+      // 本轮结束后再排下一次，避免与构建重叠
+      this.applyAutoRefresh()
+    }
+  }
+
+  /**
    * 汇总各源库的统计（消息条数 / 最新数据时间）。
    * 只在显式请求时计算，结果会持久化缓存，逐个文件让出事件循环。
    */
@@ -162,6 +215,10 @@ class IndexService {
   }
 
   private async doLoad(selection: SourceSelection, forceMerge = false): Promise<IndexStatus> {
+    // 提前记录，避免下面用 EMPTY_STATUS 重置 status 时丢掉累计值
+    const previousRevision = this.status.revision
+    const previousRefreshedAt = this.status.refreshedAt
+
     this.closeCache()
 
     const { kept: files, folded } = this.resolveSelection(selection, forceMerge)
@@ -285,13 +342,20 @@ class IndexService {
       }
     }
 
+    this.lastFingerprintKey = fingerprintKey(paths)
     this.status = {
       ...this.status,
       phase: 'ready',
       progress: 1,
-      cacheSizeBytes: fileSize(cachePath)
+      cacheSizeBytes: fileSize(cachePath),
+      // 仅「确实执行了构建」（未命中缓存）才算数据发生变化
+      revision: previousRevision + (current ? 0 : 1),
+      refreshedAt: current ? previousRefreshedAt : Date.now()
     }
     this.emit()
+
+    // 装载 / 重载自动刷新定时器（数据就绪后才会启动）
+    this.applyAutoRefresh()
 
     // 后台补齐当前范围内源库的统计信息（用于后续的优先级与界面展示），不阻塞界面
     void this.refreshScopeStats(paths)

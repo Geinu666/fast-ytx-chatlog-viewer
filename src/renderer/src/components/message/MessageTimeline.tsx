@@ -13,6 +13,7 @@ import type { MessageItem } from '@shared/types'
 import { chatKindLabel, formatCount, formatDateLabel, formatDateTime } from '@renderer/lib/format'
 import { cn } from '@renderer/lib/cn'
 import { useChatStore } from '@renderer/store/useChatStore'
+import { useIndexStore } from '@renderer/store/useIndexStore'
 import { MessageBubble } from './MessageBubble'
 
 type Row =
@@ -48,6 +49,8 @@ export function MessageTimeline() {
   const loadingMessages = useChatStore((state) => state.loadingMessages)
   const consumeAnchor = useChatStore((state) => state.consumeAnchor)
   const reloadMessages = useChatStore((state) => state.reloadMessages)
+  const refreshRevision = useIndexStore((state) => state.status?.revision ?? 0)
+  const indexPhase = useIndexStore((state) => state.status?.phase ?? 'idle')
 
   const [searchOpen, setSearchOpen] = useState(false)
   const [draft, setDraft] = useState('')
@@ -103,6 +106,21 @@ export function MessageTimeline() {
       if (delta > 0) element.scrollTop += delta
     }
   }, [messages.length, consumeAnchor])
+
+  // 索引增量刷新（自动 / 手动）后 revision 变化：仅在贴底时接上最新消息，不打断向上翻阅
+  const lastRevisionRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (indexPhase !== 'ready') return
+    if (lastRevisionRef.current === null) {
+      lastRevisionRef.current = refreshRevision
+      return
+    }
+    if (lastRevisionRef.current === refreshRevision) return
+    lastRevisionRef.current = refreshRevision
+    if (!atBottom) return
+    needBottomRef.current = true
+    void reloadMessages()
+  }, [refreshRevision, indexPhase, atBottom, reloadMessages])
 
   // 搜索命中定位
   useEffect(() => {

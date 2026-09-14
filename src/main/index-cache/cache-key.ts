@@ -8,8 +8,9 @@ import type { SourceSelection } from '../../shared/types'
  * 缓存结构版本：结构变更时递增即可自动失效旧缓存。
  * - v3 起支持「按源增量」构建
  * - v4 起支持「按行增量」构建（source 表新增行级水位字段）
+ * - v5 起 message 表新增 local_path（消息的本地缓存绝对路径）
  */
-export const CACHE_SCHEMA_VERSION = 4
+export const CACHE_SCHEMA_VERSION = 5
 
 /** 单个源库的指纹 */
 export interface SourceFingerprintFile {

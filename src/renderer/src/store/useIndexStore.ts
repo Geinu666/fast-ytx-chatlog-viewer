@@ -17,6 +17,10 @@ interface IndexState {
   refreshConfig: () => Promise<void>
   selectSource: (selection: SourceSelection) => Promise<void>
   rebuild: () => Promise<void>
+  /** 立即增量刷新，返回本次是否确有数据变化 */
+  refreshNow: () => Promise<boolean>
+  /** 保存自动刷新开关与间隔（主进程会即时重载定时器） */
+  setAutoRefresh: (enabled: boolean, intervalSec: number) => Promise<void>
   setMergeSnapshots: (enabled: boolean) => Promise<void>
   addDataDir: () => Promise<void>
   addDataFile: () => Promise<void>
@@ -105,6 +109,28 @@ export const useIndexStore = create<IndexState>((set, get) => ({
     } finally {
       set({ initializing: false })
     }
+  },
+
+  async refreshNow() {
+    const before = get().status?.revision ?? 0
+    set({ initializing: true })
+    try {
+      const status = await window.api.refreshIndex()
+      set({ status })
+      return (status?.revision ?? 0) > before
+    } finally {
+      set({ initializing: false })
+    }
+  },
+
+  async setAutoRefresh(enabled: boolean, intervalSec: number) {
+    const config = get().config ?? (await window.api.getConfig())
+    const next = await window.api.saveConfig({
+      ...config,
+      autoRefreshEnabled: enabled,
+      autoRefreshIntervalSec: intervalSec
+    })
+    set({ config: next })
   },
 
   /**

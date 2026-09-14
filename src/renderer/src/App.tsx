@@ -19,6 +19,8 @@ import { useUiStore } from './store/useUiStore'
 export default function App() {
   const init = useIndexStore((state) => state.init)
   const status = useIndexStore((state) => state.status)
+  // 索引每次真正构建后 revision 自增，据此重新拉取会话列表（新消息 / 预览）
+  const revision = useIndexStore((state) => state.status?.revision ?? 0)
   const loadChats = useChatStore((state) => state.loadChats)
   const chatKeyword = useChatStore((state) => state.chatKeyword)
   const chatScope = useChatStore((state) => state.chatScope)
@@ -39,7 +41,7 @@ export default function App() {
   useEffect(() => {
     if (!ready) return
     void loadChats()
-  }, [ready, debouncedKeyword, chatScope, loadChats])
+  }, [ready, debouncedKeyword, chatScope, loadChats, revision])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {

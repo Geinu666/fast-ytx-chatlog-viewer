@@ -6,6 +6,7 @@ import type {
   ChatQuery,
   DbSource,
   IndexStatus,
+  LocalFileResult,
   MessageQuery,
   SourceSelection
 } from '../shared/types'
@@ -23,6 +24,7 @@ const api: ChatLogApi = {
   indexStatus: (): Promise<IndexStatus> => ipcRenderer.invoke(IPC.indexStatus),
   ensureIndex: (): Promise<IndexStatus> => ipcRenderer.invoke(IPC.indexEnsure),
   rebuildIndex: (): Promise<IndexStatus> => ipcRenderer.invoke(IPC.indexRebuild),
+  refreshIndex: (): Promise<IndexStatus> => ipcRenderer.invoke(IPC.indexRefresh),
   onIndexProgress: (cb: (status: IndexStatus) => void): (() => void) => {
     const listener = (_event: unknown, status: IndexStatus): void => cb(status)
     ipcRenderer.on(IPC.indexProgress, listener)
@@ -44,6 +46,10 @@ const api: ChatLogApi = {
   searchGlobal: (query: MessageQuery) => ipcRenderer.invoke(IPC.searchGlobal, query),
   filterFacets: (chatId: string) => ipcRenderer.invoke(IPC.filterFacets, chatId),
   copyText: (text: string): Promise<boolean> => ipcRenderer.invoke(IPC.clipWrite, text),
+  openLocalFile: (path: string): Promise<LocalFileResult> =>
+    ipcRenderer.invoke(IPC.fileOpen, path),
+  revealLocalFile: (path: string): Promise<LocalFileResult> =>
+    ipcRenderer.invoke(IPC.fileReveal, path),
 
   window: {
     minimize: (): void => ipcRenderer.send(IPC.winMinimize),

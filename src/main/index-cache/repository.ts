@@ -33,6 +33,7 @@ interface MessageRow {
   str_date: string
   text: string
   raw: string
+  local_path: string
 }
 
 interface ChatRow {
@@ -50,7 +51,7 @@ interface ChatRow {
 
 const MESSAGE_COLUMNS =
   'row_id, id, chat_id, chat_type, from_id, name, avatar, kind, message_type, at, ' +
-  'is_mine, is_withdrawn, timestamp, str_date, text, raw'
+  'is_mine, is_withdrawn, timestamp, str_date, text, raw, local_path'
 
 const DEFAULT_LIMIT = 60
 const MAX_LIMIT = 500
@@ -101,7 +102,8 @@ function toMessage(row: MessageRow): MessageItem {
     timestamp: row.timestamp,
     strDate: row.str_date,
     text: row.text,
-    raw: row.raw
+    raw: row.raw,
+    localPath: row.local_path ?? ''
   }
 }
 

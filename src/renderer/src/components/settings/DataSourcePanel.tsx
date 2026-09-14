@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -9,6 +9,7 @@ import {
   Layers,
   Loader2,
   RefreshCw,
+  RotateCcw,
   ShieldCheck,
   X
 } from 'lucide-react'
@@ -38,6 +39,8 @@ export function DataSourcePanel() {
   const defaultDirs = useIndexStore((state) => state.defaultDirs)
   const selectSource = useIndexStore((state) => state.selectSource)
   const rebuild = useIndexStore((state) => state.rebuild)
+  const refreshNow = useIndexStore((state) => state.refreshNow)
+  const setAutoRefresh = useIndexStore((state) => state.setAutoRefresh)
   const refreshSources = useIndexStore((state) => state.refreshSources)
   const loadStats = useIndexStore((state) => state.loadStats)
   const setMergeSnapshots = useIndexStore((state) => state.setMergeSnapshots)
@@ -45,6 +48,32 @@ export function DataSourcePanel() {
   const loadingSources = useIndexStore((state) => state.loadingSources)
   const statsLoading = useIndexStore((state) => state.statsLoading)
   const close = useUiStore((state) => state.toggleDataSource)
+  const showToast = useUiStore((state) => state.showToast)
+
+  // 自动增量刷新：默认开启，间隔可调（10–3600 秒）
+  const autoRefreshEnabled = config?.autoRefreshEnabled !== false
+  const autoRefreshInterval = config?.autoRefreshIntervalSec ?? 60
+  const [intervalDraft, setIntervalDraft] = useState(String(autoRefreshInterval))
+
+  useEffect(() => {
+    setIntervalDraft(String(autoRefreshInterval))
+  }, [autoRefreshInterval])
+
+  const handleRefreshNow = async (): Promise<void> => {
+    const changed = await refreshNow()
+    showToast(changed ? '索引已增量更新' : '已是最新，无需刷新')
+  }
+
+  const commitInterval = async (): Promise<void> => {
+    const parsed = Number(intervalDraft)
+    const clamped =
+      Number.isFinite(parsed) && parsed > 0
+        ? Math.min(3600, Math.max(10, Math.round(parsed)))
+        : autoRefreshInterval
+    setIntervalDraft(String(clamped))
+    if (clamped === autoRefreshInterval) return
+    await setAutoRefresh(autoRefreshEnabled, clamped)
+  }
 
   const building = status?.phase === 'building'
   const busy = initializing || building
@@ -125,10 +154,21 @@ export function DataSourcePanel() {
               <button
                 type="button"
                 className="btn ml-auto"
-                onClick={() => void rebuild()}
+                onClick={() => void handleRefreshNow()}
                 disabled={busy}
+                title="立即检测源库变化并增量刷新（复用缓存，无需重建）"
               >
                 <RefreshCw size={11} className={cn(initializing && 'animate-spin')} />
+                立即刷新
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => void rebuild()}
+                disabled={busy}
+                title="删除缓存后重新完整解析（较慢，仅在数据异常时使用）"
+              >
+                <RotateCcw size={11} />
                 重建索引
               </button>
             </div>
@@ -191,6 +231,52 @@ export function DataSourcePanel() {
                   </div>
                 )}
               </dl>
+            </div>
+
+            {/* 自动增量刷新 */}
+            <div className="mt-2 flex items-start gap-2.5 rounded-xl border border-line/10 bg-surface-900/45 px-3 py-2">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={autoRefreshEnabled}
+                onClick={() => void setAutoRefresh(!autoRefreshEnabled, autoRefreshInterval)}
+                title="开启后会按设定间隔检测源库变化，有新消息时自动增量更新索引"
+                className={cn(
+                  'relative mt-0.5 h-4 w-8 shrink-0 rounded-full border transition-colors duration-200',
+                  autoRefreshEnabled
+                    ? 'border-brand-indigo/50 bg-brand-indigo/60'
+                    : 'border-line/20 bg-surface-600/60'
+                )}
+              >
+                <span
+                  className={cn(
+                    'absolute top-1/2 h-3 w-3 -translate-y-1/2 rounded-full bg-white transition-all duration-200',
+                    autoRefreshEnabled ? 'left-[17px]' : 'left-0.5'
+                  )}
+                />
+              </button>
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span className="text-micro text-ink-100">自动增量刷新索引</span>
+                <span className="flex flex-wrap items-center gap-1 text-micro leading-5 text-ink-600">
+                  每
+                  <input
+                    value={intervalDraft}
+                    onChange={(event) => setIntervalDraft(event.target.value)}
+                    onBlur={() => void commitInterval()}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') void commitInterval()
+                    }}
+                    disabled={!autoRefreshEnabled}
+                    inputMode="numeric"
+                    aria-label="自动刷新间隔（秒）"
+                    className="field h-6 w-14 px-1.5 text-center"
+                  />
+                  秒检测一次源库变化，有新消息时自动增量更新（10–3600 秒）。
+                </span>
+              </span>
+              <span className="ml-auto shrink-0 text-micro text-ink-600">
+                {status?.refreshedAt ? `上次 ${formatDateTime(status.refreshedAt)}` : '尚未刷新'}
+              </span>
             </div>
           </section>
 

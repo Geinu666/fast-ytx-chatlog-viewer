@@ -83,6 +83,7 @@ CREATE TABLE message(
   str_date TEXT NOT NULL DEFAULT '',
   text TEXT NOT NULL DEFAULT '',
   raw TEXT NOT NULL DEFAULT '',
+  local_path TEXT NOT NULL DEFAULT '',
   src_id INTEGER NOT NULL DEFAULT 0,
   src_rank INTEGER NOT NULL DEFAULT 0
 );
@@ -136,6 +137,8 @@ interface MessageRow {
   withDraw: unknown
   strDate: string | null
   messageType: unknown
+  /** 源库记录的本地缓存路径（图片 / 文件），可能为空或脏值 */
+  filePath: string | null
 }
 
 interface StoredSource {
@@ -181,8 +184,8 @@ interface SourceProbe {
 }
 
 const MESSAGE_COLUMNS = `SELECT id, name, chatId, fromId, avatar, type, at, content, timestamp,
-                                mine, withDraw, strDate, messageType
-                         FROM message_list`
+                               mine, withDraw, strDate, messageType, filePath
+                        FROM message_list`
 
 const PROBE_SQL = `
 SELECT COUNT(*) AS count,
@@ -551,8 +554,8 @@ export async function buildIndex(
     const insertMessage = cache.prepare(
       `INSERT INTO message
        (id, chat_id, chat_type, from_id, name, avatar, kind, message_type, at,
-        is_mine, is_withdrawn, timestamp, str_date, text, raw, src_id, src_rank)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        is_mine, is_withdrawn, timestamp, str_date, text, raw, local_path, src_id, src_rank)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
 
     // 4. 逐源解码写入；能走行级增量时只解码 rowid 大于水位的部分
@@ -580,7 +583,7 @@ export async function buildIndex(
       let db: Database.Database | null = null
       let inserted = 0
       try {
-        db = new Database(item.file.path, { readonly: true, fileMustExist: true })
+        db = new Database(item.file.path, { readonly: true, fileMustExist: true, timeout: 5000 })
         // 增量：只用 rowid 主键做范围扫描，几乎不耗时
         // 整库：沿用「按时间升序」读取，与历史版本行为保持一致
         const iterator = (
@@ -611,6 +614,7 @@ export async function buildIndex(
             cleanText(row.strDate),
             parsed.text,
             decoded,
+            parsed.localPath ?? cleanText(row.filePath),
             item.id,
             item.rank
           )
@@ -687,7 +691,7 @@ export async function buildIndex(
     for (const item of desired) {
       let db: Database.Database | null = null
       try {
-        db = new Database(item.file.path, { readonly: true, fileMustExist: true })
+        db = new Database(item.file.path, { readonly: true, fileMustExist: true, timeout: 5000 })
         const chats = db
           .prepare('SELECT id, name, avatar, type, lastMessage, seq FROM chat_list')
           .all() as ChatListRow[]

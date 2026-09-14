@@ -79,6 +79,11 @@ export interface MessageItem {
   text: string
   /** 已解码的原始内容，供渲染层做结构化解析 */
   raw: string
+  /**
+   * 消息对应的本地缓存绝对路径（图片 / 文件）。
+   * 来源优先级：content 内嵌 `path` 属性 → 源库 `filePath` 列。空串表示未记录。
+   */
+  localPath: string
 }
 
 /** 多维查询条件 */
@@ -181,6 +186,13 @@ export interface AppConfig {
    * 检测到全量库消息减少（发生删除）时会自动置为 true 并提示。
    */
   mergeSnapshots?: boolean
+  /**
+   * 是否自动增量刷新索引。默认 true：每隔 autoRefreshIntervalSec 检测一次
+   * 源库变化，仅在确有新数据时才真正构建。
+   */
+  autoRefreshEnabled?: boolean
+  /** 自动刷新间隔（秒），默认 60，取值范围 10–3600 */
+  autoRefreshIntervalSec?: number
 }
 
 /** 索引缓存状态 */
@@ -209,6 +221,17 @@ export interface IndexStatus {
   error?: string
   /** 缓存构建耗时（毫秒） */
   buildMs?: number
+  /** 每次真正执行构建后自增，渲染层据此感知数据变化并刷新会话 / 时间线 */
+  revision: number
+  /** 上次增量刷新完成的时间戳（0 表示尚未刷新过） */
+  refreshedAt: number
+}
+
+/** 本地文件操作（打开 / 定位）结果 */
+export interface LocalFileResult {
+  ok: boolean
+  /** 失败原因，成功时为空 */
+  error?: string
 }
 
 /** 渲染层可用的 IPC API 契约 */
@@ -239,6 +262,12 @@ export interface ChatLogApi {
   filterFacets(chatId: string): Promise<FacetResponse>
   /** 写入系统剪贴板（由主进程执行，返回是否成功） */
   copyText(text: string): Promise<boolean>
+  /** 用系统默认程序打开本地文件（仅本地路径，缺失不回落远端） */
+  openLocalFile(path: string): Promise<LocalFileResult>
+  /** 打开文件所在目录并选中该文件 */
+  revealLocalFile(path: string): Promise<LocalFileResult>
+  /** 立即触发一次增量刷新（无变化时快速返回） */
+  refreshIndex(): Promise<IndexStatus>
 
   window: {
     minimize(): void

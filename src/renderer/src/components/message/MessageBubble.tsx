@@ -82,12 +82,14 @@ export function MessageBubble({ item, keyword, highlight, showName }: MessageBub
       })
 
       let divided = false
-      if (parsed.filePath) {
+      // 优先使用数据库中记录的本地缓存路径（content 的 path 属性或 filePath 列）
+      const localFilePath = item.localPath || parsed.filePath
+      if (localFilePath) {
         items.push({
           id: 'filePath',
           label: '复制文件路径',
           dividerBefore: true,
-          onSelect: () => void copy(parsed.filePath ?? '', '文件路径')
+          onSelect: () => void copy(localFilePath, '文件路径')
         })
         divided = true
       }

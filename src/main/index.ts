@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { IPC } from '../shared/ipc-channels'
 import { registerDataHandlers } from './ipc/handlers'
 import { indexService } from './index-cache/service'
+import { registerMediaProtocol, registerMediaScheme } from './media/protocol'
 
 let windowHandlersRegistered = false
 
@@ -83,6 +84,9 @@ function registerWindowHandlers(): void {
   ipcMain.handle(IPC.winIsMaximized, () => getMainWindow()?.isMaximized() ?? false)
 }
 
+// 必须在 app ready 之前注册私有媒体 scheme，否则本地图片会被当作不安全资源拦截
+registerMediaScheme()
+
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
@@ -97,6 +101,8 @@ if (!gotLock) {
 
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
+
+    registerMediaProtocol()
 
     const win = createWindow()
     registerWindowHandlers()

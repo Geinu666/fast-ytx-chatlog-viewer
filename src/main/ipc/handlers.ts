@@ -1,6 +1,7 @@
-import { BrowserWindow, clipboard, dialog, ipcMain } from 'electron'
+import { BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
+import { existsSync, statSync } from 'node:fs'
 import { IPC } from '../../shared/ipc-channels'
-import type { ChatQuery, MessageKind, MessageQuery } from '../../shared/types'
+import type { ChatQuery, LocalFileResult, MessageKind, MessageQuery } from '../../shared/types'
 import { loadConfig, saveConfig } from '../config/store'
 import { defaultDataDirs } from '../db/discovery'
 import { ChatRepository } from '../index-cache/repository'
@@ -25,6 +26,36 @@ function requireRepo(): ChatRepository {
   const repo = indexService.getRepository()
   if (!repo) throw new Error('索引尚未就绪，请稍候重试')
   return repo
+}
+
+const MISSING_FILE_ERROR = '本地缓存不存在'
+
+/** 校验入参是一个真实存在的文件，返回绝对路径或失败原因 */
+function resolveExistingFile(raw: unknown): { path?: string; error?: string } {
+  const path = asString(raw, 1024)
+  if (!path) return { error: '无效的文件路径' }
+  try {
+    if (!existsSync(path) || !statSync(path).isFile()) return { error: MISSING_FILE_ERROR }
+  } catch {
+    return { error: MISSING_FILE_ERROR }
+  }
+  return { path }
+}
+
+/** 用系统默认程序打开本地文件（仅限本地，缺失时不回落远端） */
+async function openLocalFile(raw: unknown): Promise<LocalFileResult> {
+  const { path, error } = resolveExistingFile(raw)
+  if (!path) return { ok: false, error }
+  const failure = await shell.openPath(path)
+  return failure ? { ok: false, error: `打开失败：${failure}` } : { ok: true }
+}
+
+/** 打开文件所在目录并选中该文件 */
+function revealLocalFile(raw: unknown): LocalFileResult {
+  const { path, error } = resolveExistingFile(raw)
+  if (!path) return { ok: false, error }
+  shell.showItemInFolder(path)
+  return { ok: true }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -122,6 +153,9 @@ export function registerDataHandlers(): void {
 
   ipcMain.handle(IPC.indexRebuild, () => indexService.rebuild())
 
+  // 手动触发一次增量刷新（无变化时快速返回）
+  ipcMain.handle(IPC.indexRefresh, () => indexService.refresh())
+
   ipcMain.handle(IPC.chatList, (_event, raw: unknown) =>
     requireRepo().listChats(sanitizeChatQuery(raw))
   )
@@ -172,11 +206,20 @@ export function registerDataHandlers(): void {
     return true
   })
 
+  // 本地文件：打开 / 打开所在路径（仅接受存在的文件）
+  ipcMain.handle(IPC.fileOpen, (_event, raw: unknown) => openLocalFile(raw))
+  ipcMain.handle(IPC.fileReveal, (_event, raw: unknown) => revealLocalFile(raw))
+
   // ---- 数据源配置 ----
 
   ipcMain.handle(IPC.configGet, () => loadConfig())
 
-  ipcMain.handle(IPC.configSave, (_event, raw: unknown) => saveConfig(raw))
+  ipcMain.handle(IPC.configSave, (_event, raw: unknown) => {
+    const next = saveConfig(raw)
+    // 自动刷新开关 / 间隔变更后立即重新装载定时器
+    indexService.applyAutoRefresh()
+    return next
+  })
 
   ipcMain.handle(IPC.configDefaults, () => defaultDataDirs())
 

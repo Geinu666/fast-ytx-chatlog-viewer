@@ -8,12 +8,26 @@ import type { AppConfig, SourceSelection } from '../../shared/types'
  * 记录用户额外添加的扫描目录与数据库文件，以及上次使用的数据源。
  */
 
-/** 默认不合并历史快照：只解析无时间戳的最新全量库 */
+/** 自动刷新间隔的默认值与取值范围（秒） */
+export const DEFAULT_AUTO_REFRESH_SEC = 60
+const MIN_AUTO_REFRESH_SEC = 10
+const MAX_AUTO_REFRESH_SEC = 3600
+
+/** 默认不合并历史快照：只解析无时间戳的最新全量库；默认开启每分钟自动增量刷新 */
 const EMPTY: AppConfig = {
   dataDirs: [],
   dataFiles: [],
   lastSelection: null,
-  mergeSnapshots: false
+  mergeSnapshots: false,
+  autoRefreshEnabled: true,
+  autoRefreshIntervalSec: DEFAULT_AUTO_REFRESH_SEC
+}
+
+/** 自动刷新间隔归一化：非法值回落默认值，并夹取到 10–3600 秒 */
+export function clampAutoRefreshSec(value: unknown): number {
+  const num = Number(value)
+  if (!Number.isFinite(num) || num <= 0) return DEFAULT_AUTO_REFRESH_SEC
+  return Math.min(MAX_AUTO_REFRESH_SEC, Math.max(MIN_AUTO_REFRESH_SEC, Math.round(num)))
 }
 
 let cache: AppConfig | null = null
@@ -58,7 +72,10 @@ export function sanitizeConfig(value: unknown): AppConfig {
     dataFiles: sanitizePathList(input.dataFiles, 200),
     lastSelection,
     // 未显式设置时默认关闭（折叠历史快照）
-    mergeSnapshots: input.mergeSnapshots === true
+    mergeSnapshots: input.mergeSnapshots === true,
+    // 未显式关闭时默认开启自动刷新
+    autoRefreshEnabled: input.autoRefreshEnabled !== false,
+    autoRefreshIntervalSec: clampAutoRefreshSec(input.autoRefreshIntervalSec)
   }
 }
 
