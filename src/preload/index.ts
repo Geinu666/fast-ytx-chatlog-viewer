@@ -1,0 +1,41 @@
+import { contextBridge, ipcRenderer } from 'electron'
+import { IPC } from '../shared/ipc-channels'
+import type { ChatLogApi, ChatQuery, DbSource, IndexStatus, MessageQuery } from '../shared/types'
+
+/**
+ * 通过 contextBridge 暴露白名单 API，渲染层无法直接访问 Node / Electron 能力。
+ */
+const api: ChatLogApi = {
+  listSources: (): Promise<DbSource[]> => ipcRenderer.invoke(IPC.dbListSources),
+  selectSource: (path: string): Promise<IndexStatus> =>
+    ipcRenderer.invoke(IPC.dbSelectSource, path),
+  indexStatus: (): Promise<IndexStatus> => ipcRenderer.invoke(IPC.indexStatus),
+  rebuildIndex: (): Promise<IndexStatus> => ipcRenderer.invoke(IPC.indexRebuild),
+  onIndexProgress: (cb: (status: IndexStatus) => void): (() => void) => {
+    const listener = (_event: unknown, status: IndexStatus): void => cb(status)
+    ipcRenderer.on(IPC.indexProgress, listener)
+    return () => ipcRenderer.removeListener(IPC.indexProgress, listener)
+  },
+
+  listChats: (query: ChatQuery) => ipcRenderer.invoke(IPC.chatList, query),
+  chatMeta: (chatId: string) => ipcRenderer.invoke(IPC.chatMeta, chatId),
+  messagePage: (query: MessageQuery) => ipcRenderer.invoke(IPC.messagePage, query),
+  messageContext: (chatId: string, messageId: string, radius?: number) =>
+    ipcRenderer.invoke(IPC.messageContext, chatId, messageId, radius),
+  searchGlobal: (query: MessageQuery) => ipcRenderer.invoke(IPC.searchGlobal, query),
+  filterFacets: (chatId: string) => ipcRenderer.invoke(IPC.filterFacets, chatId),
+
+  window: {
+    minimize: (): void => ipcRenderer.send(IPC.winMinimize),
+    toggleMaximize: (): void => ipcRenderer.send(IPC.winToggleMaximize),
+    close: (): void => ipcRenderer.send(IPC.winClose),
+    isMaximized: (): Promise<boolean> => ipcRenderer.invoke(IPC.winIsMaximized),
+    onMaximizeChange: (cb: (maximized: boolean) => void): (() => void) => {
+      const listener = (_event: unknown, maximized: boolean): void => cb(maximized)
+      ipcRenderer.on(IPC.winMaximizeChange, listener)
+      return () => ipcRenderer.removeListener(IPC.winMaximizeChange, listener)
+    }
+  }
+}
+
+contextBridge.exposeInMainWorld('api', api)

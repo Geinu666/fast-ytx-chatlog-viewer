@@ -1,0 +1,43 @@
+appId: com.fastytx.chatlogviewer
+productName: ChatLogViewer
+copyright: Copyright © 2026 fast-ytx
+
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+
+asarUnpack:
+  - '**/*.node'
+  - node_modules/better-sqlite3/**
+
+win:
+  # winCodeSign 的 7z 包内含 macOS 符号链接，在无管理员/开发者模式的 Windows 上解压会失败；
+  # 关闭该步骤即可绕开，代价是 exe 使用 Electron 默认图标与元数据。
+  signAndEditExecutable: false
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  artifactName: ${productName}-${version}-${arch}-setup.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 聊天记录查看器
+  artifactName: ${productName}-${version}-${arch}-setup.${ext}
+
+portable:
+  artifactName: ${productName}-${version}-${arch}-portable.${ext}
+
+npmRebuild: true
