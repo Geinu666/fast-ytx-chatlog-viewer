@@ -1,4 +1,5 @@
 import { app, BrowserWindow, Menu, ipcMain, shell } from 'electron'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { IPC } from '../shared/ipc-channels'
 import { registerDataHandlers } from './ipc/handlers'
@@ -11,7 +12,16 @@ function getMainWindow(): BrowserWindow | null {
   return win && !win.isDestroyed() ? win : null
 }
 
+/** 应用图标：打包后位于 resources，开发态取 build 目录 */
+function resolveIconPath(): string | undefined {
+  const candidates = app.isPackaged
+    ? [join(process.resourcesPath, 'icon.ico')]
+    : [join(process.cwd(), 'build', 'icon.ico')]
+  return candidates.find((candidate) => existsSync(candidate))
+}
+
 function createWindow(): BrowserWindow {
+  const icon = resolveIconPath()
   const win = new BrowserWindow({
     width: 1480,
     height: 920,
@@ -21,6 +31,7 @@ function createWindow(): BrowserWindow {
     frame: false,
     backgroundColor: '#0B0F1A',
     title: '猿通讯聊天记录查看器',
+    ...(icon ? { icon } : {}),
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

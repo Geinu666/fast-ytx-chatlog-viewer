@@ -15,10 +15,12 @@ asarUnpack:
   - '**/*.node'
   - node_modules/better-sqlite3/**
 
+extraResources:
+  - from: build/icon.ico
+    to: icon.ico
+
 win:
-  # winCodeSign 的 7z 包内含 macOS 符号链接，在无管理员/开发者模式的 Windows 上解压会失败；
-  # 关闭该步骤即可绕开，代价是 exe 使用 Electron 默认图标与元数据。
-  signAndEditExecutable: false
+  icon: build/icon.ico
   target:
     - target: nsis
       arch:
@@ -35,6 +37,9 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: 猿通讯聊天记录查看器
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
   artifactName: ${productName}-${version}-${arch}-setup.${ext}
 
 portable:

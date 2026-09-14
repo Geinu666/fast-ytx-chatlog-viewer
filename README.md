@@ -142,6 +142,35 @@ npm run build:win
 - `ChatLogViewer-1.0.0-x64-setup.exe` —— NSIS 安装包（可选安装目录、创建桌面与开始菜单快捷方式）
 - `ChatLogViewer-1.0.0-x64-portable.exe` —— 免安装绿色版
 
+> **关于 winCodeSign**：写入 exe 图标与版本信息依赖 electron-builder 的 winCodeSign 工具包。
+> 该 7z 包内的 `darwin/10.12/lib/*.dylib` 是 macOS 符号链接，在没有管理员权限且未开启
+> 「开发者模式」的 Windows 上解压会失败（`CreateSymbolicLink: 客户端没有所需的特权`）。
+> 因此 `build:win` 会先执行 `scripts/prepare-wincodesign.mjs`：自行下载并**排除 darwin 目录**
+> 解压到 `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\winCodeSign-2.6.0`（已存在则跳过）。
+> 网络受限时可先设置镜像：
+> `$env:ELECTRON_BUILDER_BINARIES_MIRROR='https://npmmirror.com/mirrors/electron-builder-binaries/'`
+
+也可单独执行：
+
+```bash
+npm run prepare:wincodesign
+```
+
+---
+
+## 应用图标
+
+`build/icon.ico` 由猿通讯原始客户端图标派生：取自 `Uninstall 猿通讯.exe` 内的 256×256
+图标资源，保留原有的帽子、墨镜、毛发与配色，仅将咧嘴大笑的嘴形改为向下耷拉、张开的
+哭泣嘴形，并在镜片下缘添加泪珠，得到「哭泣的猴子」版本。
+
+图标包含 16 / 24 / 32 / 48 / 64 / 128 / 256 共 7 种尺寸，分别用于：
+
+- 主程序 `ChatLogViewer.exe`、任务栏与窗口标题栏
+- NSIS 安装包、卸载程序与安装向导页眉
+- 桌面与开始菜单快捷方式
+- 运行时窗口图标（通过 `extraResources` 输出到 `resources/icon.ico`）
+
 ---
 
 ## 数据放置约定
@@ -163,6 +192,8 @@ npm run build:win
 ## 目录结构
 
 ```
+build/icon.ico               # 应用图标（哭泣猴子，7 种尺寸）
+scripts/prepare-wincodesign.mjs  # 预置 winCodeSign 缓存（规避 Windows 符号链接权限问题）
 src/
 ├── shared/                  # 主/渲染进程共享
 │   ├── types.ts             # 类型契约（ChatItem / MessageItem / MessageQuery …）

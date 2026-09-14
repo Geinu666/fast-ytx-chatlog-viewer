@@ -9,13 +9,14 @@
   "private": true,
   "scripts": {
     "setup": "node node_modules/electron/install.js && electron-builder install-app-deps",
+    "prepare:wincodesign": "node scripts/prepare-wincodesign.mjs",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "rebuild": "electron-builder install-app-deps",
-    "build:win": "electron-vite build && electron-builder --win",
-    "build:dir": "electron-vite build && electron-builder --win --dir"
+    "build:win": "node scripts/prepare-wincodesign.mjs && electron-vite build && electron-builder --win",
+    "build:dir": "node scripts/prepare-wincodesign.mjs && electron-vite build && electron-builder --win --dir"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.1"
