@@ -234,6 +234,14 @@ export interface LocalFileResult {
   error?: string
 }
 
+/** 本地文件定位入参：优先用数据库路径，其次按文件名在本机缓存目录中查找 */
+export interface LocalFileQuery {
+  /** 数据库记录的路径（可能是发送方机器的路径） */
+  path?: string
+  /** 文件名（通常是 content 里的 file-name，或路径 basename） */
+  name?: string
+}
+
 /** 渲染层可用的 IPC API 契约 */
 export interface ChatLogApi {
   /** force=true 时忽略短时缓存强制重新扫描 */
@@ -266,6 +274,8 @@ export interface ChatLogApi {
   openLocalFile(path: string): Promise<LocalFileResult>
   /** 打开文件所在目录并选中该文件 */
   revealLocalFile(path: string): Promise<LocalFileResult>
+  /** 解析文件消息对应的本机真实路径；找不到时返回 null */
+  resolveLocalFile(input: LocalFileQuery): Promise<string | null>
   /** 立即触发一次增量刷新（无变化时快速返回） */
   refreshIndex(): Promise<IndexStatus>
 

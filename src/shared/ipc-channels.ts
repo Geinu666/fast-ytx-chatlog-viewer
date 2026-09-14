@@ -22,6 +22,7 @@ export const IPC = {
   clipWrite: 'clip:write',
   fileOpen: 'file:open',
   fileReveal: 'file:reveal',
+  fileResolveLocal: 'file:resolveLocal',
   winMinimize: 'win:minimize',
   winToggleMaximize: 'win:toggleMaximize',
   winClose: 'win:close',

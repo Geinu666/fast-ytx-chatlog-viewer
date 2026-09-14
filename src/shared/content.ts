@@ -90,13 +90,18 @@ export function stripHtml(html: string): string {
 const RE_IMG_SRC = /<img[^>]*\bsrc\s*=\s*["']([^"']+)["']/i
 const RE_IMG_TAG = /<img\b[^>]*>/i
 const RE_A_TAG = /<a\b[^>]*>/i
-const RE_ATTR = (name: string): RegExp => new RegExp(`<a\\b[^>]*\\b${name}\\s*=\\s*["']([^"']*)["']`, 'i')
+const RE_ATTR = (name: string): RegExp =>
+  new RegExp(`<a\\b[^>]*?\\b${name}\\s*=\\s*["']([^"']*)["']`, 'i')
 /**
  * 本地缓存绝对路径：`<img path="...">` 与 `<a path="...">`。
- * 属性顺序不定且 `path` 可能出现两次，取标签内第一个非空值即可。
+ *
+ * 标签内 `path` 常出现两次（实测 7806 条消息的两者不同）：
+ * 第一个是本机缓存路径（与源库 `filePath` 列一致，形如
+ * `C:\Users\<本机用户>\AppData\Roaming\boctx\<本机ID>\ChatImage\<消息ID>.png`），
+ * 第二个是原发送方机器的路径。必须**非贪婪**取第一个，否则会展示别的机器上的路径。
  */
-const RE_IMG_PATH = /<img\b[^>]*\bpath\s*=\s*["']([^"']*)["']/i
-const RE_A_PATH = /<a\b[^>]*\bpath\s*=\s*["']([^"']*)["']/i
+const RE_IMG_PATH = /<img\b[^>]*?\bpath\s*=\s*["']([^"']*)["']/i
+const RE_A_PATH = /<a\b[^>]*?\bpath\s*=\s*["']([^"']*)["']/i
 const RE_FILE_NAME = /<span[^>]*\bclass\s*=\s*["'][^"']*\bfile-name\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i
 const RE_QUOTE = /<div[^>]*\bclass\s*=\s*["'][^"']*\bchat-quote\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i
 const RE_AT_SPAN = /<span[^>]*\bcontenteditable\s*=\s*["']false["'][^>]*>([\s\S]*?)<\/span>/gi
@@ -124,11 +129,26 @@ function basename(p: string): string {
   return idx >= 0 ? normalized.slice(idx + 1) : normalized
 }
 
+/**
+ * 归一化本地路径。
+ *
+ * 顶层消息里的路径是单反斜杠，但批量转发的子消息 content 被 JSON 二次转义，
+ * 盘符后的反斜杠会成对出现（`D:\\yuantx\\3781\\...`）。
+ * 仅在形如 `X:\\` 时折叠成单个反斜杠，避免破坏 `\\server\share` 这类 UNC 路径。
+ */
+export function normalizeLocalPath(path: string): string {
+  if (!path) return ''
+  if (/^[A-Za-z]:\\\\/.test(path)) return path.replace(/\\\\/g, '\\')
+  return path
+}
+
 /** `path` 属性值归一化：脏值（undefined/null/空）返回 undefined */
 function normalizePathAttr(match: RegExpExecArray | null): string | undefined {
   if (!match || !match[1]) return undefined
   const value = match[1].trim()
-  return isBlank(value) ? undefined : value
+  if (isBlank(value)) return undefined
+  const normalized = normalizeLocalPath(value)
+  return normalized || undefined
 }
 
 function extractFileName(html: string): string {

@@ -6,6 +6,7 @@ import type {
   ChatQuery,
   DbSource,
   IndexStatus,
+  LocalFileQuery,
   LocalFileResult,
   MessageQuery,
   SourceSelection
@@ -50,6 +51,8 @@ const api: ChatLogApi = {
     ipcRenderer.invoke(IPC.fileOpen, path),
   revealLocalFile: (path: string): Promise<LocalFileResult> =>
     ipcRenderer.invoke(IPC.fileReveal, path),
+  resolveLocalFile: (input: LocalFileQuery): Promise<string | null> =>
+    ipcRenderer.invoke(IPC.fileResolveLocal, input),
 
   window: {
     minimize: (): void => ipcRenderer.send(IPC.winMinimize),

@@ -1,9 +1,9 @@
 import { BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
-import { existsSync, statSync } from 'node:fs'
 import { IPC } from '../../shared/ipc-channels'
 import type { ChatQuery, LocalFileResult, MessageKind, MessageQuery } from '../../shared/types'
 import { loadConfig, saveConfig } from '../config/store'
 import { defaultDataDirs } from '../db/discovery'
+import { isExistingFile, resolveLocalFile } from '../db/local-files'
 import { ChatRepository } from '../index-cache/repository'
 import { indexService } from '../index-cache/service'
 
@@ -34,12 +34,7 @@ const MISSING_FILE_ERROR = '本地缓存不存在'
 function resolveExistingFile(raw: unknown): { path?: string; error?: string } {
   const path = asString(raw, 1024)
   if (!path) return { error: '无效的文件路径' }
-  try {
-    if (!existsSync(path) || !statSync(path).isFile()) return { error: MISSING_FILE_ERROR }
-  } catch {
-    return { error: MISSING_FILE_ERROR }
-  }
-  return { path }
+  return isExistingFile(path) ? { path } : { error: MISSING_FILE_ERROR }
 }
 
 /** 用系统默认程序打开本地文件（仅限本地，缺失时不回落远端） */
@@ -209,6 +204,15 @@ export function registerDataHandlers(): void {
   // 本地文件：打开 / 打开所在路径（仅接受存在的文件）
   ipcMain.handle(IPC.fileOpen, (_event, raw: unknown) => openLocalFile(raw))
   ipcMain.handle(IPC.fileReveal, (_event, raw: unknown) => revealLocalFile(raw))
+
+  // 图片另存为 / 本地文件定位（按文件名在本机缓存目录中查真实路径）
+  ipcMain.handle(IPC.fileResolveLocal, (_event, raw: unknown) => {
+    const input = asRecord(raw)
+    return resolveLocalFile({
+      path: asString(input.path, 1024),
+      name: asString(input.name, 260)
+    })
+  })
 
   // ---- 数据源配置 ----
 

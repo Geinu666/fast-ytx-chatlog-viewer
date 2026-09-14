@@ -14,6 +14,7 @@ import type { MessageItem } from '@shared/types'
 import { cn } from '@renderer/lib/cn'
 import { Highlight } from '@renderer/lib/highlight'
 import { localMediaUrl } from '@renderer/lib/localMedia'
+import { useResolvedLocalFile } from '@renderer/hooks/useResolvedLocalFile'
 import { useUiStore } from '@renderer/store/useUiStore'
 
 interface MessageContentProps {
@@ -120,40 +121,49 @@ function FileBlock({
   fileName,
   localPath,
   fileUrl,
+  isMine,
   keyword
 }: {
   fileName?: string
   localPath?: string
   fileUrl?: string
+  /** 是否本人发送：决定「未下载」的措辞 */
+  isMine: boolean
   keyword?: string
 }) {
   const showToast = useUiStore((state) => state.showToast)
+  // 数据库里的路径多为发送方机器的路径，需在本机缓存目录中按文件名定位真实文件
+  const resolved = useResolvedLocalFile(localPath, fileName)
+  const localFile = resolved ?? ''
+  const checking = resolved === undefined
+  const missing = resolved === null
   const label = fileName || localPath?.split(/[\\/]/).pop() || '文件'
+  const missingText = isMine ? '本地无该文件缓存' : '未下载到本地'
 
-  /** 打开本地缓存文件：缺失时仅提示，不回落远端链接 */
+  /** 打开本机文件：定位不到时仅提示，不回落远端链接 */
   const openLocal = async (): Promise<void> => {
-    if (!localPath) {
-      showToast('本地缓存不存在')
+    if (!localFile) {
+      showToast(checking ? '正在查找本地文件…' : missingText)
       return
     }
-    const result = await window.api.openLocalFile(localPath)
+    const result = await window.api.openLocalFile(localFile)
     if (!result.ok) showToast(result.error || '打开失败')
   }
 
   /** 打开所在目录并选中该文件 */
   const revealLocal = async (): Promise<void> => {
-    if (!localPath) {
-      showToast('本地缓存不存在')
+    if (!localFile) {
+      showToast(checking ? '正在查找本地文件…' : missingText)
       return
     }
-    const result = await window.api.revealLocalFile(localPath)
+    const result = await window.api.revealLocalFile(localFile)
     if (!result.ok) showToast(result.error || '打开所在路径失败')
   }
 
   return (
     <div
       onDoubleClick={() => void openLocal()}
-      title={localPath ? `${localPath}（双击打开）` : '本地缓存不存在'}
+      title={localFile ? `${localFile}（双击打开）` : checking ? '正在查找本地文件…' : missingText}
       className="flex w-[280px] flex-col gap-2 rounded-xl border border-line/10 bg-surface-900/50 p-3"
     >
       <div className="flex items-center gap-2">
@@ -161,36 +171,44 @@ function FileBlock({
         <span className="min-w-0 flex-1 truncate text-body text-ink-100">
           <Highlight text={label} keyword={keyword} />
         </span>
+        {missing && (
+          <span className="shrink-0 rounded-full bg-surface-600/70 px-1.5 text-micro text-ink-400">
+            {isMine ? '本地无缓存' : '未下载'}
+          </span>
+        )}
       </div>
-      {localPath && (
-        <span className="truncate text-micro text-ink-600" title={localPath}>
-          {localPath}
+
+      {/* 仅在本机确实定位到文件时才展示路径，避免展示其他机器上的路径造成误解 */}
+      {localFile && (
+        <span className="truncate text-micro text-ink-600" title={localFile}>
+          {localFile}
         </span>
       )}
+      {missing && <span className="text-micro text-ink-600">{missingText}，未显示路径</span>}
+
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
-          className="btn"
+          className={cn('btn', !localFile && 'cursor-not-allowed opacity-55')}
+          disabled={!localFile}
           onClick={() => void openLocal()}
-          title={localPath ? '用系统默认程序打开（双击卡片亦可）' : '本地缓存不存在'}
+          title={localFile ? '用系统默认程序打开（双击卡片亦可）' : missingText}
         >
           <FolderOpen size={11} />
           打开
         </button>
         <button
           type="button"
-          className="btn"
+          className={cn('btn', !localFile && 'cursor-not-allowed opacity-55')}
+          disabled={!localFile}
           onClick={() => void revealLocal()}
-          title={localPath ? '打开所在目录并选中该文件' : '本地缓存不存在'}
+          title={localFile ? '打开所在目录并选中该文件' : missingText}
         >
           <FolderSearch size={11} />
           打开文件所在路径
         </button>
         {fileUrl && <ExternalButton url={fileUrl} />}
       </div>
-      {!localPath && (
-        <span className="text-micro text-ink-600">数据库中未记录本地缓存路径</span>
-      )}
     </div>
   )
 }
@@ -250,6 +268,7 @@ export function MessageContent({ item, keyword }: MessageContentProps) {
         fileName={parsed.fileName}
         localPath={item.localPath || parsed.localPath}
         fileUrl={parsed.fileUrl}
+        isMine={item.isMine}
         keyword={keyword}
       />
     )
