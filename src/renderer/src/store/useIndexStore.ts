@@ -8,10 +8,12 @@ interface IndexState {
   defaultDirs: string[]
   initializing: boolean
   loadingSources: boolean
+  statsLoading: boolean
   initialized: boolean
 
   init: () => Promise<void>
-  refreshSources: () => Promise<void>
+  refreshSources: (force?: boolean) => Promise<void>
+  loadStats: (force?: boolean) => Promise<void>
   refreshConfig: () => Promise<void>
   selectSource: (selection: SourceSelection) => Promise<void>
   rebuild: () => Promise<void>
@@ -30,6 +32,7 @@ export const useIndexStore = create<IndexState>((set, get) => ({
   defaultDirs: [],
   initializing: false,
   loadingSources: false,
+  statsLoading: false,
   initialized: false,
 
   async init() {
@@ -53,13 +56,24 @@ export const useIndexStore = create<IndexState>((set, get) => ({
     }
   },
 
-  async refreshSources() {
+  async refreshSources(force = false) {
     set({ loadingSources: true })
     try {
-      const sources = await window.api.listSources()
+      const sources = await window.api.listSources(force)
       set({ sources })
     } finally {
       set({ loadingSources: false })
+    }
+  },
+
+  /** 汇总各源库统计（消息条数 / 最新数据时间），结果由主进程持久化缓存 */
+  async loadStats(force = false) {
+    set({ statsLoading: true })
+    try {
+      const sources = await window.api.sourceStats(force)
+      set({ sources })
+    } finally {
+      set({ statsLoading: false })
     }
   },
 

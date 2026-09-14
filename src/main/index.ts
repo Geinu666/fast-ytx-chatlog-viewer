@@ -98,12 +98,20 @@ if (!gotLock) {
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
 
-    createWindow()
+    const win = createWindow()
     registerWindowHandlers()
     registerDataHandlers()
 
-    // 后台准备索引，进度通过 IPC 事件回传
-    void indexService.ensureReady()
+    // 关键顺序：先让窗口显示出来，再开始扫描 / 建索引。
+    // 扫描与建索引涉及大量磁盘读取，若在窗口显示前执行会占用主进程事件循环，
+    // 导致 ready-to-show 迟迟无法触发，表现为「长时间无窗口」。
+    const startIndex = (): void => {
+      setTimeout(() => {
+        void indexService.ensureReady()
+      }, 30)
+    }
+    if (win.isVisible()) startIndex()
+    else win.once('ready-to-show', startIndex)
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()

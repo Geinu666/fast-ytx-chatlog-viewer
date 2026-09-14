@@ -1,25 +1,28 @@
 import { BrowserWindow } from 'electron'
 import Database from 'better-sqlite3'
-import { existsSync, rmSync } from 'node:fs'
 import { basename } from 'node:path'
 import { IPC } from '../../shared/ipc-channels'
 import type { DbSource, IndexStatus, SourceSelection } from '../../shared/types'
 import { rememberSelection } from '../config/store'
 import {
   discoverSources,
+  invalidateDiscovery,
   pickDefaultSelection,
   sourceForFile,
   sourcesInDirectory
 } from '../db/discovery'
-import { buildIndex, isCacheValid } from './builder'
-import { cachePathFor, fileSize, fingerprintFor } from './cache-key'
+import { ensureStats } from '../db/stats'
+import { buildIndex, isCacheCurrent, removeCache, type BuildResult } from './builder'
+import { cachePathForScope, fileSize, fingerprintFor } from './cache-key'
 import { ChatRepository } from './repository'
 
 /**
  * 索引服务：负责数据源范围选择、缓存构建（含进度回传）与仓储生命周期。
  *
  * 选择范围可以是**单个文件**，也可以是**一个目录**——后者会递归收集该目录下
- * 全部可用数据库并按消息 ID 合并去重，界面看到的是这些库的「总聊天记录」。
+ * 全部可用数据库并按消息 ID 合并去重。构建是**增量**的：只有新增、指纹变化或
+ * 上次未能完整收录的源库才会被重新解码，其余直接复用缓存中的行。
+ *
  * 所有源库均以只读方式打开，写操作仅发生在 userData 下的缓存库。
  */
 const EMPTY_STATUS: IndexStatus = {
@@ -43,6 +46,7 @@ class IndexService {
   private repo: ChatRepository | null = null
   private pending: Promise<IndexStatus> | null = null
   private selection: SourceSelection | null = null
+  private statsRunning = false
 
   getStatus(): IndexStatus {
     return { ...this.status, includedFiles: [...this.status.includedFiles] }
@@ -52,8 +56,8 @@ class IndexService {
     return this.repo
   }
 
-  listSources(): DbSource[] {
-    return discoverSources()
+  listSources(force = false): DbSource[] {
+    return discoverSources(force)
   }
 
   /** 把选择范围解析为具体的数据库文件列表（按合并优先级排序） */
@@ -93,19 +97,37 @@ class IndexService {
     const selection = this.selection ?? pickDefaultSelection(this.listSources())
     if (!selection) return this.ensureReady()
 
-    const files = this.resolveSelection(selection).map((item) => item.path)
-    if (files.length > 0) {
-      const cachePath = cachePathFor(fingerprintFor(files))
-      this.closeCache()
-      if (existsSync(cachePath)) {
-        try {
-          rmSync(cachePath, { force: true })
-        } catch {
-          // 忽略删除失败，后续会以新文件重建
-        }
-      }
-    }
+    // 强制重建：直接删掉缓存文件
+    this.closeCache()
+    removeCache(cachePathForScope(selection))
     return this.load(selection)
+  }
+
+  /**
+   * 汇总各源库的统计（消息条数 / 最新数据时间）。
+   * 只在显式请求时计算，结果会持久化缓存，逐个文件让出事件循环。
+   */
+  async sourceStats(force = false): Promise<DbSource[]> {
+    if (!force) return this.listSources()
+
+    const sources = this.listSources(true)
+    const targets = sources.filter((item) => item.valid).map((item) => item.path)
+    if (targets.length === 0) return sources
+
+    this.statsRunning = true
+    try {
+      await ensureStats(targets, (done, total) => {
+        this.status = { ...this.status, message: `正在统计源库信息 ${done} / ${total}…` }
+        this.emit()
+      })
+    } finally {
+      this.statsRunning = false
+    }
+
+    invalidateDiscovery()
+    const refreshed = this.listSources(true)
+    // 统计会改变合并优先级（数据新旧），若当前范围未就绪则重新评估
+    return refreshed
   }
 
   private async load(selection: SourceSelection): Promise<IndexStatus> {
@@ -138,9 +160,9 @@ class IndexService {
     }
 
     const paths = files.map((item) => item.path)
-    const fp = fingerprintFor(paths)
-    const cachePath = cachePathFor(fp)
-    const reusable = isCacheValid(cachePath, fp)
+    const fingerprints = fingerprintFor(paths)
+    const cachePath = cachePathForScope(selection)
+    const current = isCacheCurrent(cachePath, fingerprints)
     const sourceName =
       selection.kind === 'dir'
         ? `${basename(selection.path) || selection.path} · 合并 ${files.length} 个库`
@@ -148,22 +170,25 @@ class IndexService {
 
     this.status = {
       ...EMPTY_STATUS,
-      phase: reusable ? 'ready' : 'building',
+      phase: current ? 'ready' : 'building',
       selectionKind: selection.kind,
       selectionPath: selection.path,
       includedFiles: paths,
       sourceName,
       cachePath,
       cacheSizeBytes: fileSize(cachePath),
-      progress: reusable ? 1 : 0,
-      message: reusable ? '已从索引缓存加载' : `正在合并 ${files.length} 个数据库…`
+      progress: current ? 1 : 0,
+      message: current
+        ? `已复用索引缓存（${files.length} 个库）`
+        : `正在准备 ${files.length} 个数据库…`
     }
     this.selection = selection
     rememberSelection(selection)
     this.emit()
 
-    if (!reusable) {
-      const result = await buildIndex(fp.files, cachePath, fp, (progress) => {
+    let result: BuildResult | null = null
+    if (!current) {
+      result = await buildIndex(fingerprints, cachePath, (progress) => {
         const label = progress.label ? ` ${progress.label}` : ''
         let message = `正在解析${label}`
         if (progress.phase === 'dedupe') message = '正在按消息 ID 去重…'
@@ -183,13 +208,16 @@ class IndexService {
         this.emit()
       })
 
+      const dedupeText =
+        result.duplicateMessages > 0 ? `，去重 ${result.duplicateMessages} 条` : ''
+      const prefix = result.incremental
+        ? `增量更新完成（重新解析 ${result.decodedFiles} 个库、复用 ${result.reusedFiles} 个）`
+        : `合并完成`
       this.status = {
         ...this.status,
         duplicateMessages: result.duplicateMessages,
         buildMs: result.buildMs,
-        message:
-          `合并完成，共 ${result.messageCount} 条消息` +
-          (result.duplicateMessages > 0 ? `（去重 ${result.duplicateMessages} 条）` : '')
+        message: `${prefix}，共 ${result.messageCount} 条消息${dedupeText}`
       }
     }
 
@@ -198,20 +226,14 @@ class IndexService {
     this.cacheDb = db
     this.repo = new ChatRepository(db)
 
-    if (reusable) {
-      const row = db.prepare("SELECT value FROM meta WHERE key = 'duplicate_messages'").get() as
-        | { value: string }
-        | undefined
-      const duplicates = row ? Number(row.value) || 0 : 0
-      const countRow = db.prepare("SELECT value FROM meta WHERE key = 'message_count'").get() as
-        | { value: string }
-        | undefined
-      const total = countRow ? Number(countRow.value) || 0 : 0
+    if (current) {
+      const duplicates = Number(readMetaValue(db, 'duplicate_messages')) || 0
+      const total = Number(readMetaValue(db, 'message_count')) || 0
       this.status = {
         ...this.status,
         duplicateMessages: duplicates,
         message:
-          `已合并 ${files.length} 个库，共 ${total} 条消息` +
+          `已复用索引缓存（${files.length} 个库），共 ${total} 条消息` +
           (duplicates > 0 ? `（去重 ${duplicates} 条）` : '')
       }
     }
@@ -223,7 +245,22 @@ class IndexService {
       cacheSizeBytes: fileSize(cachePath)
     }
     this.emit()
+
+    // 后台补齐当前范围内源库的统计信息（用于后续的优先级与界面展示），不阻塞界面
+    void this.refreshScopeStats(paths)
+
     return this.getStatus()
+  }
+
+  /** 后台统计当前范围的源库（惰性、持久化、逐个文件让出事件循环） */
+  private async refreshScopeStats(paths: string[]): Promise<void> {
+    if (paths.length <= 1) return
+    try {
+      await ensureStats(paths)
+      invalidateDiscovery()
+    } catch {
+      // 统计失败不影响主流程
+    }
   }
 
   private closeCache(): void {
@@ -243,6 +280,17 @@ class IndexService {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send(IPC.indexProgress, payload)
     }
+  }
+}
+
+function readMetaValue(db: Database.Database, key: string): string | null {
+  try {
+    const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(key) as
+      | { value: string }
+      | undefined
+    return row ? row.value : null
+  } catch {
+    return null
   }
 }
 

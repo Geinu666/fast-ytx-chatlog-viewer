@@ -196,7 +196,10 @@ export interface IndexStatus {
 
 /** 渲染层可用的 IPC API 契约 */
 export interface ChatLogApi {
-  listSources(): Promise<DbSource[]>
+  /** force=true 时忽略短时缓存强制重新扫描 */
+  listSources(force?: boolean): Promise<DbSource[]>
+  /** 汇总各源库统计（消息条数 / 最新数据时间）；force=true 时计算缺失项 */
+  sourceStats(force?: boolean): Promise<DbSource[]>
   /** 选择数据源范围：单个文件，或某目录下的全部数据库（合并） */
   selectSource(selection: SourceSelection): Promise<IndexStatus>
   indexStatus(): Promise<IndexStatus>

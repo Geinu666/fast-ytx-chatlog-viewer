@@ -2,22 +2,24 @@ import { app } from 'electron'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import type { SourceSelection } from '../../shared/types'
 
-/** 缓存结构版本号：结构变更时递增即可自动失效旧缓存（v2 起支持多库合并去重） */
-export const CACHE_SCHEMA_VERSION = 2
+/** 缓存结构版本：结构变更时递增即可自动失效旧缓存（v3 起支持增量构建） */
+export const CACHE_SCHEMA_VERSION = 3
 
+/** 单个源库的指纹 */
 export interface SourceFingerprintFile {
   path: string
   size: number
   mtimeMs: number
 }
 
-/** 一次构建可能包含多个源库，指纹即全部文件的集合 */
-export interface SourceFingerprint {
-  files: SourceFingerprintFile[]
+export function fileKey(file: SourceFingerprintFile): string {
+  return `${file.path}|${file.size}|${file.mtimeMs}`
 }
 
-export function fingerprintFor(paths: string[]): SourceFingerprint {
+/** 采集给定文件的指纹（读取失败的文件会被忽略） */
+export function fingerprintFor(paths: string[]): SourceFingerprintFile[] {
   const files: SourceFingerprintFile[] = []
   for (const path of paths) {
     try {
@@ -27,31 +29,26 @@ export function fingerprintFor(paths: string[]): SourceFingerprint {
       // 文件已不存在则忽略
     }
   }
-  files.sort((a, b) => a.path.localeCompare(b.path))
-  return { files }
-}
-
-export function fingerprintKey(fp: SourceFingerprint): string {
-  const body = fp.files.map((f) => `${f.path}|${f.size}|${f.mtimeMs}`).join('\n')
-  return `${body}|v${CACHE_SCHEMA_VERSION}`
-}
-
-export function fingerprintHash(fp: SourceFingerprint): string {
-  return createHash('md5').update(fingerprintKey(fp)).digest('hex')
-}
-
-/** 依据指纹生成稳定的缓存文件路径（位于 userData/index-cache） */
-export function cachePathFor(fp: SourceFingerprint): string {
-  const hash = fingerprintHash(fp).slice(0, 16)
-  const dir = join(app.getPath('userData'), 'index-cache')
-  mkdirSync(dir, { recursive: true })
-  return join(dir, `idx-${hash}.db`)
+  return files
 }
 
 export function cacheDir(): string {
   const dir = join(app.getPath('userData'), 'index-cache')
   mkdirSync(dir, { recursive: true })
   return dir
+}
+
+/**
+ * 缓存文件按「选择范围」命名，而不是按文件集合命名。
+ * 这样范围内的文件发生增删/变化时仍复用同一个缓存文件，从而走增量更新，
+ * 也避免产生一堆只差一个文件的缓存副本。
+ */
+export function cachePathForScope(selection: SourceSelection): string {
+  const hash = createHash('md5')
+    .update(`${selection.kind}|${selection.path}|v${CACHE_SCHEMA_VERSION}`)
+    .digest('hex')
+    .slice(0, 16)
+  return join(cacheDir(), `idx-${hash}.db`)
 }
 
 export function fileSize(path: string | null): number {

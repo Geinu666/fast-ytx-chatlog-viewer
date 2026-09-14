@@ -14,7 +14,10 @@ import type {
  * 通过 contextBridge 暴露白名单 API，渲染层无法直接访问 Node / Electron 能力。
  */
 const api: ChatLogApi = {
-  listSources: (): Promise<DbSource[]> => ipcRenderer.invoke(IPC.dbListSources),
+  listSources: (force?: boolean): Promise<DbSource[]> =>
+    ipcRenderer.invoke(IPC.dbListSources, force === true),
+  sourceStats: (force?: boolean): Promise<DbSource[]> =>
+    ipcRenderer.invoke(IPC.dbSourceStats, force === true),
   selectSource: (selection: SourceSelection): Promise<IndexStatus> =>
     ipcRenderer.invoke(IPC.dbSelectSource, selection),
   indexStatus: (): Promise<IndexStatus> => ipcRenderer.invoke(IPC.indexStatus),

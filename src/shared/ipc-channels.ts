@@ -1,6 +1,7 @@
 /** 主进程与渲染进程之间的 IPC 通道常量 */
 export const IPC = {
   dbListSources: 'db:listSources',
+  dbSourceStats: 'db:sourceStats',
   dbSelectSource: 'db:selectSource',
   indexStatus: 'index:status',
   indexEnsure: 'index:ensure',

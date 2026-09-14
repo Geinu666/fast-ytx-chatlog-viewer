@@ -5,6 +5,7 @@ import {
   Database,
   FileText,
   FolderTree,
+  Gauge,
   Layers,
   Loader2,
   RefreshCw,
@@ -36,8 +37,10 @@ export function DataSourcePanel() {
   const selectSource = useIndexStore((state) => state.selectSource)
   const rebuild = useIndexStore((state) => state.rebuild)
   const refreshSources = useIndexStore((state) => state.refreshSources)
+  const loadStats = useIndexStore((state) => state.loadStats)
   const initializing = useIndexStore((state) => state.initializing)
   const loadingSources = useIndexStore((state) => state.loadingSources)
+  const statsLoading = useIndexStore((state) => state.statsLoading)
   const close = useUiStore((state) => state.toggleDataSource)
 
   const building = status?.phase === 'building'
@@ -182,7 +185,17 @@ export function DataSourcePanel() {
               <button
                 type="button"
                 className="btn ml-auto"
-                onClick={() => void refreshSources()}
+                onClick={() => void loadStats(true)}
+                disabled={statsLoading || loadingSources || busy}
+                title="统计各源库的消息条数与最新数据时间（逐个文件计算，结果会被缓存）"
+              >
+                <Gauge size={11} className={cn(statsLoading && 'animate-pulse')} />
+                {statsLoading ? '统计中…' : '统计全部来源'}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => void refreshSources(true)}
                 disabled={loadingSources || busy}
               >
                 <RefreshCw size={11} className={cn(loadingSources && 'animate-spin')} />
@@ -232,8 +245,9 @@ export function DataSourcePanel() {
                     </span>
                     {group.files.length > 0 && (
                       <span className="text-micro text-ink-600">
-                        合计 {formatCount(group.total)} 条消息 · 最新数据{' '}
-                        {formatDateTime(group.newest)}
+                        {group.total > 0
+                          ? `合计 ${formatCount(group.total)} 条消息 · 最新数据 ${formatDateTime(group.newest)}`
+                          : `${group.files.length} 个库（总量点「统计全部来源」后可见）`}
                       </span>
                     )}
                   </button>
@@ -295,9 +309,11 @@ export function DataSourcePanel() {
                       </span>
                     </span>
                     <span className="text-micro text-ink-600">
-                      {source.valid
-                        ? `${formatCount(source.messageCount)} 条消息 · 最新 ${formatDateTime(source.newestTimestamp)}`
-                        : source.error}
+                      {!source.valid
+                        ? source.error
+                        : source.messageCount > 0
+                          ? `${formatCount(source.messageCount)} 条消息 · 最新 ${formatDateTime(source.newestTimestamp)}`
+                          : '消息量未统计（可点右上角「统计全部来源」）'}
                     </span>
                   </button>
                 )

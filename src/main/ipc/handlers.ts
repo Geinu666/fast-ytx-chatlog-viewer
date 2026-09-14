@@ -98,7 +98,13 @@ function sanitizeChatQuery(raw: unknown): ChatQuery {
 
 /** 注册数据相关 IPC 处理器（全部入参做类型与范围校验） */
 export function registerDataHandlers(): void {
-  ipcMain.handle(IPC.dbListSources, () => indexService.listSources())
+  ipcMain.handle(IPC.dbListSources, (_event, rawForce: unknown) =>
+    indexService.listSources(rawForce === true)
+  )
+
+  ipcMain.handle(IPC.dbSourceStats, (_event, rawForce: unknown) =>
+    indexService.sourceStats(rawForce === true)
+  )
 
   ipcMain.handle(IPC.dbSelectSource, (_event, raw: unknown) => {
     const input = asRecord(raw)

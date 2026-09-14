@@ -4,6 +4,7 @@ import { existsSync, readdirSync, statSync, type Dirent } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
 import type { DbSource, SourceSelection } from '../../shared/types'
 import { loadConfig } from '../config/store'
+import { peekStats } from './stats'
 
 /**
  * 数据源发现。
@@ -16,6 +17,9 @@ import { loadConfig } from '../config/store'
  *    - 开发态：项目根目录；打包态：exe 同目录、resources 及其上级
  *    - userData 目录
  *    - 环境变量 CHATLOG_DATA_DIR（分号分隔，便于便携使用）
+ *
+ * 性能约定：本模块只做**廉价**探测（读取 sqlite_master 判断表结构），
+ * 不做 COUNT(*) / MAX(timestamp) 这类全表扫描；统计信息由 stats.ts 惰性补齐。
  */
 
 /** 约定文件名：message.db / message3763.db 等 */
@@ -28,6 +32,9 @@ const MAX_SCAN_DEPTH = 3
 
 /** 单次扫描的 .db 文件数量上限，防止异常目录拖慢启动 */
 const MAX_FILES = 200
+
+/** 发现结果缓存时长（毫秒），避免一次启动被重复扫描多遍 */
+const DISCOVERY_TTL = 30_000
 
 /** 明显不含聊天库的子目录，直接跳过（含应用自身的索引缓存目录） */
 const SKIP_DIRS = new Set([
@@ -43,6 +50,8 @@ const SKIP_DIRS = new Set([
   'GPUCache',
   'index-cache'
 ])
+
+let discoveryCache: { at: number; key: string; sources: DbSource[] } | null = null
 
 /** 猿通讯默认数据目录：%APPDATA%\boctx */
 export function boctxDir(): string {
@@ -83,6 +92,17 @@ export function candidateDirs(): string[] {
   )
 }
 
+/** 配置变化后清空发现缓存 */
+export function invalidateDiscovery(): void {
+  discoveryCache = null
+}
+
+function configKey(): string {
+  const config = loadConfig()
+  return `${config.dataDirs.join('|')}::${config.dataFiles.join('|')}`
+}
+
+/** 廉价的可用性探测：只读取 sqlite_master */
 function inspect(filePath: string, origin: DbSource['origin'], inBoctx: boolean): DbSource {
   const stat = statSync(filePath)
   const source: DbSource = {
@@ -109,11 +129,12 @@ function inspect(filePath: string, origin: DbSource['origin'], inBoctx: boolean)
     const missing = REQUIRED_TABLES.filter((name) => !tables.includes(name))
     if (missing.length === 0) {
       source.valid = true
-      const stat2 = db
-        .prepare('SELECT COUNT(*) AS total, IFNULL(MAX(timestamp), 0) AS newest FROM message_list')
-        .get() as { total: number; newest: number }
-      source.messageCount = stat2.total
-      source.newestTimestamp = stat2.newest
+      // 命中统计缓存时顺带填上（免费），否则保持未知，由 stats.ts 惰性补齐
+      const stats = peekStats(filePath)
+      if (stats) {
+        source.messageCount = stats.messageCount
+        source.newestTimestamp = stats.newestTimestamp
+      }
     } else {
       source.error = `缺少数据表：${missing.join('、')}`
     }
@@ -129,13 +150,13 @@ function inspect(filePath: string, origin: DbSource['origin'], inBoctx: boolean)
 /**
  * 排序即合并优先级：越靠前越优先（同 ID 消息保留靠前源库的版本）。
  *
- * 依次比较：用户配置来源 → 库内数据最新（MAX(timestamp)）→ 约定文件名 →
- * 猿通讯目录 → 文件修改时间。
+ * 依次比较：用户配置来源 → 库内数据最新（有统计时）→ 约定文件名 →
+ * 猿通讯目录 → 修改时间 → 文件大小。
+ * 全部为廉价信号，不会触发全表扫描。
  */
 export function compareSources(a: DbSource, b: DbSource): number {
   if (a.origin !== b.origin) return a.origin === 'configured' ? -1 : 1
 
-  // 数据新鲜度：以库内最新消息时间为准，比文件 mtime 更可靠
   if (a.newestTimestamp !== b.newestTimestamp) return b.newestTimestamp - a.newestTimestamp
 
   const convA = CONVENTION_NAME.test(a.fileName) ? 1 : 0
@@ -145,42 +166,11 @@ export function compareSources(a: DbSource, b: DbSource): number {
   if (a.inBoctx !== b.inBoctx) return a.inBoctx ? -1 : 1
 
   if (a.modifiedAt !== b.modifiedAt) return b.modifiedAt - a.modifiedAt
+
+  // 快照链中更新的一份通常更大，作为最后的兜底判定
+  if (a.sizeBytes !== b.sizeBytes) return b.sizeBytes - a.sizeBytes
+
   return a.fileName.localeCompare(b.fileName)
-}
-
-/** 直接检查单个文件（不依赖其是否位于扫描目录内） */
-export function sourceForFile(filePath: string): DbSource | null {
-  if (!existsSync(filePath)) return null
-  try {
-    const source = inspect(
-      filePath,
-      'configured',
-      filePath.toLowerCase().startsWith(boctxDir().toLowerCase())
-    )
-    return source.valid ? source : null
-  } catch {
-    return null
-  }
-}
-
-/** 收集指定目录下的全部可用数据库（递归），按合并优先级排序 */
-export function sourcesInDirectory(dir: string): DbSource[] {
-  const files: string[] = []
-  if (existsSync(dir)) {
-    collectDbFiles(dir, 0, { count: 0 }, (file) => files.push(file))
-  }
-
-  const boctx = boctxDir().toLowerCase()
-  const sources: DbSource[] = []
-  for (const file of files) {
-    try {
-      const source = inspect(file, 'configured', file.toLowerCase().startsWith(boctx))
-      if (source.valid) sources.push(source)
-    } catch {
-      // 无法读取的文件直接跳过
-    }
-  }
-  return sources.sort(compareSources)
 }
 
 interface ScanState {
@@ -218,19 +208,58 @@ function collectDbFiles(
   }
 }
 
-/** 扫描全部来源并返回去重后的数据源列表 */
-export function discoverSources(): DbSource[] {
+/** 直接检查单个文件（不依赖其是否位于扫描目录内） */
+export function sourceForFile(filePath: string): DbSource | null {
+  if (!existsSync(filePath)) return null
+  try {
+    const source = inspect(
+      filePath,
+      'configured',
+      filePath.toLowerCase().startsWith(boctxDir().toLowerCase())
+    )
+    return source.valid ? source : null
+  } catch {
+    return null
+  }
+}
+
+/** 收集指定目录下的全部可用数据库（递归），按合并优先级排序 */
+export function sourcesInDirectory(dir: string): DbSource[] {
+  const files: string[] = []
+  if (existsSync(dir)) {
+    collectDbFiles(dir, 0, { count: 0 }, (file) => files.push(file))
+  }
+
+  const boctx = boctxDir().toLowerCase()
+  const sources: DbSource[] = []
+  for (const file of files) {
+    try {
+      const source = inspect(file, 'configured', file.toLowerCase().startsWith(boctx))
+      if (source.valid) sources.push(source)
+    } catch {
+      // 无法读取的文件直接跳过
+    }
+  }
+  return sources.sort(compareSources)
+}
+
+/** 扫描全部来源并返回去重后的数据源列表（带短时缓存） */
+export function discoverSources(force = false): DbSource[] {
+  const key = `${candidateDirs().join('|')}::${configKey()}`
+  if (!force && discoveryCache && discoveryCache.key === key) {
+    if (Date.now() - discoveryCache.at < DISCOVERY_TTL) return discoveryCache.sources
+  }
+
   const config = loadConfig()
   const boctx = boctxDir().toLowerCase()
-
   const found = new Map<string, { path: string; origin: DbSource['origin'] }>()
 
   const add = (filePath: string, origin: DbSource['origin']): void => {
-    const key = filePath.toLowerCase()
-    const existing = found.get(key)
+    const dedupeKey = filePath.toLowerCase()
+    const existing = found.get(dedupeKey)
     // 已由用户配置收录的，不被默认扫描结果覆盖
     if (existing && existing.origin === 'configured') return
-    found.set(key, { path: filePath, origin })
+    found.set(dedupeKey, { path: filePath, origin })
   }
 
   // 1. 用户显式添加的单个文件
@@ -261,11 +290,13 @@ export function discoverSources(): DbSource[] {
     }
   }
 
-  return sources.sort(compareSources)
+  sources.sort(compareSources)
+  discoveryCache = { at: Date.now(), key, sources }
+  return sources
 }
 
 /**
- * 默认选择范围：优先恢复上次使用的范围；否则取「数据最新那个库所在目录」，
+ * 默认选择范围：优先恢复上次使用的范围；否则取「文件最新的那个库所在目录」，
  * 对同目录下的全部数据库做合并查看。
  */
 export function pickDefaultSelection(sources: DbSource[]): SourceSelection | null {
@@ -282,6 +313,5 @@ export function pickDefaultSelection(sources: DbSource[]): SourceSelection | nul
     }
   }
 
-  // 默认：合并「数据最新」那个库所在目录下的全部数据库
   return { kind: 'dir', path: dirname(valid[0].path) }
 }
