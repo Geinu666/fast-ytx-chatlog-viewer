@@ -234,12 +234,29 @@ export interface LocalFileResult {
   error?: string
 }
 
+/** 图片另存为入参：本地缓存优先，仅有远端链接时由主进程下载 */
+export interface SaveImageInput {
+  localPath?: string
+  url?: string
+  /** 建议文件名（含扩展名） */
+  suggestedName: string
+}
+
 /** 本地文件定位入参：优先用数据库路径，其次按文件名在本机缓存目录中查找 */
 export interface LocalFileQuery {
   /** 数据库记录的路径（可能是发送方机器的路径） */
   path?: string
   /** 文件名（通常是 content 里的 file-name，或路径 basename） */
   name?: string
+}
+
+/** 另存为结果 */
+export interface SaveFileResult {
+  ok: boolean
+  /** 用户取消了保存对话框 */
+  canceled?: boolean
+  savedPath?: string
+  error?: string
 }
 
 /** 渲染层可用的 IPC API 契约 */
@@ -274,6 +291,8 @@ export interface ChatLogApi {
   openLocalFile(path: string): Promise<LocalFileResult>
   /** 打开文件所在目录并选中该文件 */
   revealLocalFile(path: string): Promise<LocalFileResult>
+  /** 图片另存为：本地缓存直接复制，仅有远端链接时下载后写入 */
+  saveImageAs(input: SaveImageInput): Promise<SaveFileResult>
   /** 解析文件消息对应的本机真实路径；找不到时返回 null */
   resolveLocalFile(input: LocalFileQuery): Promise<string | null>
   /** 立即触发一次增量刷新（无变化时快速返回） */

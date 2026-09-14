@@ -9,6 +9,8 @@ import type {
   LocalFileQuery,
   LocalFileResult,
   MessageQuery,
+  SaveFileResult,
+  SaveImageInput,
   SourceSelection
 } from '../shared/types'
 
@@ -51,6 +53,8 @@ const api: ChatLogApi = {
     ipcRenderer.invoke(IPC.fileOpen, path),
   revealLocalFile: (path: string): Promise<LocalFileResult> =>
     ipcRenderer.invoke(IPC.fileReveal, path),
+  saveImageAs: (input: SaveImageInput): Promise<SaveFileResult> =>
+    ipcRenderer.invoke(IPC.fileSaveAs, input),
   resolveLocalFile: (input: LocalFileQuery): Promise<string | null> =>
     ipcRenderer.invoke(IPC.fileResolveLocal, input),
 

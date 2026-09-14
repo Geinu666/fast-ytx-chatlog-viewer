@@ -1,6 +1,14 @@
-import { BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
+import { BrowserWindow, clipboard, dialog, ipcMain, net, shell } from 'electron'
+import { copyFile, writeFile } from 'node:fs/promises'
 import { IPC } from '../../shared/ipc-channels'
-import type { ChatQuery, LocalFileResult, MessageKind, MessageQuery } from '../../shared/types'
+import type {
+  ChatQuery,
+  LocalFileResult,
+  MessageKind,
+  MessageQuery,
+  SaveFileResult,
+  SaveImageInput
+} from '../../shared/types'
 import { loadConfig, saveConfig } from '../config/store'
 import { defaultDataDirs } from '../db/discovery'
 import { isExistingFile, resolveLocalFile } from '../db/local-files'
@@ -51,6 +59,63 @@ function revealLocalFile(raw: unknown): LocalFileResult {
   if (!path) return { ok: false, error }
   shell.showItemInFolder(path)
   return { ok: true }
+}
+
+const SAVE_IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'svg']
+
+/** 文件名净化：去掉路径分隔符与 Windows 非法字符 */
+function sanitizeFileName(name: unknown, fallback: string): string {
+  const raw = asString(name, 260) ?? ''
+  const cleaned = raw.replace(/[\\/:*?"<>|]/g, '_').trim()
+  return cleaned || fallback
+}
+
+/**
+ * 图片另存为。
+ * - 有本地缓存且文件存在 → 直接复制；
+ * - 仅有远端链接 → 主进程下载后写入（仅接受 http/https）。
+ */
+async function saveImageAs(raw: unknown): Promise<SaveFileResult> {
+  const input = asRecord(raw) as Partial<SaveImageInput>
+  const localPath = asString(input.localPath, 1024)
+  const url = asString(input.url, 2048)
+  const hasRemote = Boolean(url && /^https?:\/\//i.test(url))
+
+  if (localPath) {
+    if (!isExistingFile(localPath)) return { ok: false, error: MISSING_FILE_ERROR }
+  } else if (!hasRemote) {
+    return { ok: false, error: '没有可保存的图片' }
+  }
+
+  const suggested = sanitizeFileName(input.suggestedName, 'image.png')
+  const options: Electron.SaveDialogOptions = {
+    title: '图片另存为',
+    defaultPath: suggested,
+    filters: [
+      { name: '图片', extensions: SAVE_IMAGE_EXTENSIONS },
+      { name: '全部文件', extensions: ['*'] }
+    ]
+  }
+  const win = BrowserWindow.getFocusedWindow()
+  const result = win
+    ? await dialog.showSaveDialog(win, options)
+    : await dialog.showSaveDialog(options)
+  if (result.canceled || !result.filePath) return { ok: false, canceled: true }
+
+  try {
+    if (localPath) {
+      await copyFile(localPath, result.filePath)
+    } else if (url) {
+      const response = await net.fetch(url)
+      if (!response.ok) return { ok: false, error: `下载失败：HTTP ${response.status}` }
+      const buffer = Buffer.from(await response.arrayBuffer())
+      if (buffer.length === 0) return { ok: false, error: '远端图片内容为空' }
+      await writeFile(result.filePath, buffer)
+    }
+    return { ok: true, savedPath: result.filePath }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : '保存失败' }
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -206,6 +271,7 @@ export function registerDataHandlers(): void {
   ipcMain.handle(IPC.fileReveal, (_event, raw: unknown) => revealLocalFile(raw))
 
   // 图片另存为 / 本地文件定位（按文件名在本机缓存目录中查真实路径）
+  ipcMain.handle(IPC.fileSaveAs, (_event, raw: unknown) => saveImageAs(raw))
   ipcMain.handle(IPC.fileResolveLocal, (_event, raw: unknown) => {
     const input = asRecord(raw)
     return resolveLocalFile({

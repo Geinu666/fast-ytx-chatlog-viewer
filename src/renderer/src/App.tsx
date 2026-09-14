@@ -8,6 +8,7 @@ import { StatusBar } from './components/layout/StatusBar'
 import { TitleBar } from './components/layout/TitleBar'
 import { MessageTimeline } from './components/message/MessageTimeline'
 import { GlobalSearch } from './components/search/GlobalSearch'
+import { Lightbox } from './components/common/Lightbox'
 import { DataSourcePanel } from './components/settings/DataSourcePanel'
 import { useDebouncedValue } from './hooks/useDebounce'
 import { cn } from './lib/cn'
@@ -122,6 +123,9 @@ export default function App() {
       <StatusBar />
 
       <Toast />
+
+      {/* 图片查看弹窗（未打开时不渲染） */}
+      <Lightbox />
 
       {searchOpen && <GlobalSearch />}
       {showDataSource && <DataSourcePanel />}

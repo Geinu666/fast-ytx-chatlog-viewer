@@ -1,8 +1,9 @@
 import { useCallback, useState, type MouseEvent } from 'react'
 import { parseMessageContent } from '@shared/content'
-import type { MessageItem } from '@shared/types'
+import type { MessageItem, SaveImageInput } from '@shared/types'
 import { cn } from '@renderer/lib/cn'
 import { formatClock, formatDateTime } from '@renderer/lib/format'
+import { suggestImageName } from '@renderer/lib/localMedia'
 import { Avatar } from '@renderer/components/common/Avatar'
 import { ContextMenu, type ContextMenuItem } from '@renderer/components/common/ContextMenu'
 import { useUiStore } from '@renderer/store/useUiStore'
@@ -36,6 +37,15 @@ export function MessageBubble({ item, keyword, highlight, showName }: MessageBub
       }
       const ok = await window.api.copyText(value)
       showToast(ok ? `已复制${label}` : '复制失败')
+    },
+    [showToast]
+  )
+
+  const saveImage = useCallback(
+    async (input: SaveImageInput): Promise<void> => {
+      const result = await window.api.saveImageAs(input)
+      if (result.canceled) return
+      showToast(result.ok ? '图片已保存' : result.error || '保存失败')
     },
     [showToast]
   )
@@ -112,6 +122,22 @@ export function MessageBubble({ item, keyword, highlight, showName }: MessageBub
         divided = true
       }
 
+      // 图片另存为：本地缓存优先，仅有远端链接时由主进程下载
+      const imageLocalPath = item.localPath || parsed.localPath
+      if (parsed.kind === 'image' && (imageLocalPath || parsed.imageUrl)) {
+        items.push({
+          id: 'saveImage',
+          label: '图片另存为…',
+          dividerBefore: true,
+          onSelect: () =>
+            void saveImage({
+              localPath: imageLocalPath || undefined,
+              url: parsed.imageUrl,
+              suggestedName: suggestImageName(imageLocalPath, parsed.imageUrl, item.id)
+            })
+        })
+      }
+
       const rawIsDistinct = Boolean(item.raw) && item.raw !== text
       if (rawIsDistinct) {
         items.push({
@@ -130,7 +156,7 @@ export function MessageBubble({ item, keyword, highlight, showName }: MessageBub
 
       setMenu({ x: event.clientX, y: event.clientY, items })
     },
-    [copy, item]
+    [copy, item, saveImage]
   )
 
   if (item.kind === 'system' || item.kind === 'withdrawn') {

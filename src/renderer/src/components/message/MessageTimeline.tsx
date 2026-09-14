@@ -9,11 +9,14 @@ import {
   Users,
   X
 } from 'lucide-react'
+import { parseMessageContent } from '@shared/content'
 import type { MessageItem } from '@shared/types'
 import { chatKindLabel, formatCount, formatDateLabel, formatDateTime } from '@renderer/lib/format'
 import { cn } from '@renderer/lib/cn'
+import { localMediaUrl } from '@renderer/lib/localMedia'
 import { useChatStore } from '@renderer/store/useChatStore'
 import { useIndexStore } from '@renderer/store/useIndexStore'
+import { useLightboxStore, type LightboxImage } from '@renderer/store/useLightboxStore'
 import { MessageBubble } from './MessageBubble'
 
 type Row =
@@ -61,6 +64,33 @@ export function MessageTimeline() {
   const needBottomRef = useRef(false)
 
   const rows = useMemo(() => buildRows(messages), [messages])
+
+  // 当前会话已加载消息中的图片集合，供「查看大图」弹窗前后切换
+  const galleryImages = useMemo<LightboxImage[]>(
+    () =>
+      messages
+        .map((item): LightboxImage | null => {
+          const parsed = parseMessageContent(item.raw, item.messageType, item.isWithdrawn)
+          if (parsed.kind !== 'image') return null
+          const localPath = item.localPath || parsed.localPath
+          const src = localPath ? localMediaUrl(localPath) : parsed.imageUrl
+          if (!src) return null
+          return {
+            id: item.id,
+            src,
+            localPath: localPath || undefined,
+            url: parsed.imageUrl,
+            title: `${item.name || item.fromId || '未知'} · ${formatDateTime(item.timestamp)}`
+          }
+        })
+        .filter((image): image is LightboxImage => image !== null),
+    [messages]
+  )
+
+  const setTimelineImages = useLightboxStore((state) => state.setTimelineImages)
+  useEffect(() => {
+    setTimelineImages(galleryImages)
+  }, [galleryImages, setTimelineImages])
 
   const virtualizer = useVirtualizer({
     count: rows.length,

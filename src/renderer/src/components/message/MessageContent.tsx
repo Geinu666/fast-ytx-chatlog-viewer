@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type MouseEvent } from 'react'
 import {
   AtSign,
   ExternalLink,
@@ -11,21 +11,17 @@ import {
 } from 'lucide-react'
 import { parseMessageContent } from '@shared/content'
 import type { MessageItem } from '@shared/types'
+import { ContextMenu } from '@renderer/components/common/ContextMenu'
 import { cn } from '@renderer/lib/cn'
 import { Highlight } from '@renderer/lib/highlight'
-import { localMediaUrl } from '@renderer/lib/localMedia'
+import { localMediaUrl, suggestImageName } from '@renderer/lib/localMedia'
 import { useResolvedLocalFile } from '@renderer/hooks/useResolvedLocalFile'
+import { useLightboxStore } from '@renderer/store/useLightboxStore'
 import { useUiStore } from '@renderer/store/useUiStore'
 
 interface MessageContentProps {
   item: MessageItem
   keyword?: string
-}
-
-function hostOf(url?: string): string {
-  if (!url) return ''
-  const match = /^https?:\/\/([^/]+)/i.exec(url)
-  return match ? match[1] : url
 }
 
 function ExternalButton({ url }: { url: string }) {
@@ -43,10 +39,13 @@ function ExternalButton({ url }: { url: string }) {
 }
 
 function ImageBlock({
+  itemId,
   url,
   localPath,
   keyword
 }: {
+  /** 消息 ID，用于在图片查看弹窗中定位当前项 */
+  itemId: string
   url?: string
   localPath?: string
   keyword?: string
@@ -55,6 +54,8 @@ function ImageBlock({
   const [stage, setStage] = useState<'local' | 'remote' | 'idle' | 'failed'>(() =>
     localPath ? 'local' : 'idle'
   )
+  const showToast = useUiStore((state) => state.showToast)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
 
   const src =
     stage === 'local' && localPath ? localMediaUrl(localPath) : stage === 'remote' && url ? url : ''
@@ -64,23 +65,97 @@ function ImageBlock({
     setStage(stage === 'local' && url ? 'remote' : 'failed')
   }
 
+  /** 双击：在应用内弹窗中查看大图（可前后切换、缩放） */
+  const openViewer = (): void => {
+    useLightboxStore.getState().openById(itemId)
+  }
+
+  /** 用系统默认程序 / 系统浏览器打开原图 */
+  const openWithSystem = async (): Promise<void> => {
+    if (localPath) {
+      const result = await window.api.openLocalFile(localPath)
+      if (!result.ok) showToast(result.error || '打开失败')
+      return
+    }
+    if (url) window.open(url, '_blank')
+  }
+
+  /** 另存为：本地缓存优先，仅远端链接时由主进程下载 */
+  const saveAs = async (): Promise<void> => {
+    const result = await window.api.saveImageAs({
+      localPath: localPath || undefined,
+      url,
+      suggestedName: suggestImageName(localPath, url)
+    })
+    if (result.canceled) return
+    showToast(result.ok ? '图片已保存' : result.error || '保存失败')
+  }
+
+  const copyImageLink = async (): Promise<void> => {
+    if (!url) return
+    const ok = await window.api.copyText(url)
+    showToast(ok ? '已复制图片链接' : '复制失败')
+  }
+
+  /** 右键图片：阻止冒泡，使用图片自身菜单（消息气泡菜单另有同样入口） */
+  const handleContextMenu = (event: MouseEvent<HTMLImageElement>): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    setMenu({ x: event.clientX, y: event.clientY })
+  }
+
   if (src) {
     return (
-      <div className="flex flex-col gap-1.5">
-        <img
-          src={src}
-          alt="聊天图片"
-          loading="lazy"
-          onError={handleError}
-          className="max-h-64 max-w-[320px] rounded-xl border border-line/10 object-contain"
-        />
-        <span
-          className="max-w-[320px] truncate text-micro text-ink-600"
-          title={stage === 'local' ? localPath : src}
-        >
-          {stage === 'local' ? '本地缓存' : hostOf(src)}
-        </span>
-      </div>
+      <>
+        <div className="group flex max-w-[320px] flex-col gap-1">
+          <img
+            src={src}
+            alt="聊天图片"
+            loading="lazy"
+            onError={handleError}
+            onDoubleClick={openViewer}
+            onContextMenu={handleContextMenu}
+            title="双击查看大图 · 右键另存为"
+            className="max-h-64 max-w-[320px] cursor-zoom-in rounded-xl border border-line/10 object-contain transition-colors duration-200 group-hover:border-brand-cyan/35"
+          />
+          {/* 不展示地址，仅在悬停时提示可用操作 */}
+          <span className="text-micro text-ink-600 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+            双击查看大图 · 右键另存为
+          </span>
+        </div>
+        {menu && (
+          <ContextMenu
+            x={menu.x}
+            y={menu.y}
+            onClose={() => setMenu(null)}
+            items={[
+              {
+                id: 'viewer',
+                label: '查看大图',
+                onSelect: openViewer
+              },
+              {
+                id: 'openSystem',
+                label: '用系统程序打开',
+                dividerBefore: true,
+                onSelect: () => void openWithSystem()
+              },
+              {
+                id: 'saveAs',
+                label: '图片另存为…',
+                onSelect: () => void saveAs()
+              },
+              {
+                id: 'copyLink',
+                label: '复制图片链接',
+                dividerBefore: true,
+                disabled: !url,
+                onSelect: () => void copyImageLink()
+              }
+            ]}
+          />
+        )}
+      </>
     )
   }
 
@@ -255,6 +330,7 @@ export function MessageContent({ item, keyword }: MessageContentProps) {
   if (parsed.kind === 'image') {
     return (
       <ImageBlock
+        itemId={item.id}
         url={parsed.imageUrl}
         localPath={item.localPath || parsed.localPath}
         keyword={keyword}
