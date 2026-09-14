@@ -18,6 +18,7 @@ import { localMediaUrl, suggestImageName } from '@renderer/lib/localMedia'
 import { useResolvedLocalFile } from '@renderer/hooks/useResolvedLocalFile'
 import { useLightboxStore } from '@renderer/store/useLightboxStore'
 import { useUiStore } from '@renderer/store/useUiStore'
+import { ForwardBlock } from './ForwardBlock'
 
 interface MessageContentProps {
   item: MessageItem
@@ -325,6 +326,10 @@ export function MessageContent({ item, keyword }: MessageContentProps) {
 
   if (parsed.kind === 'withdrawn') {
     return <span className="text-micro italic text-ink-600">{parsed.text}</span>
+  }
+
+  if (parsed.kind === 'forward' && parsed.forward) {
+    return <ForwardBlock payload={parsed.forward} keyword={keyword} />
   }
 
   if (parsed.kind === 'image') {

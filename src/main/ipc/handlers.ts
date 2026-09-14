@@ -24,6 +24,7 @@ const VALID_KINDS: MessageKind[] = [
   'emoji',
   'system',
   'withdrawn',
+  'forward',
   'unknown'
 ]
 

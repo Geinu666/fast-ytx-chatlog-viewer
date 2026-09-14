@@ -77,6 +77,7 @@ export const KIND_LABEL: Record<string, string> = {
   emoji: '表情',
   system: '系统',
   withdrawn: '撤回',
+  forward: '转发',
   unknown: '其他'
 }
 

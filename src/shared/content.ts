@@ -106,6 +106,47 @@ const RE_FILE_NAME = /<span[^>]*\bclass\s*=\s*["'][^"']*\bfile-name\b[^"']*["'][
 const RE_QUOTE = /<div[^>]*\bclass\s*=\s*["'][^"']*\bchat-quote\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i
 const RE_AT_SPAN = /<span[^>]*\bcontenteditable\s*=\s*["']false["'][^>]*>([\s\S]*?)<\/span>/gi
 const RE_HAS_TAG = /<[a-z][a-z0-9]*\b[^>]*>/i
+/**
+ * 批量转发（合并转发）结构：
+ *   <span class="message-object">王鹏和柯显聊天记录</span>
+ *   <msg style="display:none">[ {子消息}, ... ]</msg>
+ * 标题来自 message-object 的文本，正文是 `<msg>` 内的 JSON 数组。
+ */
+const RE_FORWARD_TITLE =
+  /<span[^>]*\bclass\s*=\s*["'][^"']*\bmessage-object\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i
+const RE_FORWARD_MSG = /<msg\b[^>]*>([\s\S]*?)<\/msg>/i
+
+/** 转发嵌套的最大解析深度，防止异常数据造成无限递归 */
+const FORWARD_MAX_DEPTH = 5
+
+/** 批量转发里的一条子消息 */
+export interface ForwardNode {
+  id: string
+  name: string
+  avatar: string
+  timestamp: number
+  strDate: string
+  mine: boolean
+  withdrawn: boolean
+  /** 原始 messageType（已归一化为文本） */
+  messageType: string
+  /** 已解码的子消息内容，供渲染层复用既有解析逻辑 */
+  raw: string
+  /** 子消息的本地缓存绝对路径（已归一化），无则为空串 */
+  localPath: string
+  /** 子消息纯文本，用于展示 */
+  text: string
+  kind: MessageKind
+  /** 子消息本身也是转发时的嵌套内容 */
+  forward?: ForwardPayload
+}
+
+/** 一次转发（合并转发）的内容 */
+export interface ForwardPayload {
+  title: string
+  count: number
+  items: ForwardNode[]
+}
 
 /** 结构化解析结果 */
 export interface ParsedMessage {
@@ -120,6 +161,8 @@ export interface ParsedMessage {
   localPath?: string
   atList?: string[]
   quoteText?: string
+  /** 批量转发内容（kind === 'forward' 时存在） */
+  forward?: ForwardPayload
 }
 
 function basename(p: string): string {
@@ -234,6 +277,82 @@ function classifyByHtml(html: string): MessageKind {
   return 'text'
 }
 
+/** 布尔类脏值判断（兼容布尔 `true` 与字符串 `'true'`） */
+function isTruthyFlag(value: unknown): boolean {
+  return value === true || String(value).toLowerCase() === 'true'
+}
+
+/** 读取 `<msg>` 内的 JSON 数组；不是合法的转发载荷时返回 null */
+function readForwardList(html: string): unknown[] | null {
+  const match = RE_FORWARD_MSG.exec(html)
+  if (!match || !match[1]) return null
+  const payload = match[1].trim()
+  if (!payload.startsWith('[')) return null
+
+  let list: unknown
+  try {
+    list = JSON.parse(payload)
+  } catch {
+    return null
+  }
+  if (!Array.isArray(list) || list.length === 0) return null
+
+  // 强校验：子消息必须带 content / messageType 字段，避免把普通文本误判为转发
+  const first = list[0]
+  if (!first || typeof first !== 'object') return null
+  const record = first as Record<string, unknown>
+  if (!('content' in record) && !('messageType' in record)) return null
+  return list
+}
+
+/** 把一条子消息转成 ForwardNode（递归解析其自身可能存在的转发结构） */
+function toForwardNode(value: unknown, index: number, depth: number): ForwardNode | null {
+  if (!value || typeof value !== 'object') return null
+  const node = value as Record<string, unknown>
+  const raw = decodeContent(node.content)
+  const withdrawn = isTruthyFlag(node.withdraw) || isTruthyFlag(node.withDraw)
+  const parsed = parseDecodedAt(raw, node.messageType, withdrawn, depth)
+
+  return {
+    id: cleanText(node.id) || `#${index}`,
+    name: cleanText(node.name),
+    avatar: cleanText(node.avatar),
+    timestamp: Number(node.timestamp) || 0,
+    strDate: cleanText(node.strDate),
+    mine: isTruthyFlag(node.mine),
+    withdrawn,
+    messageType: cleanText(node.messageType),
+    raw,
+    localPath: normalizeLocalPath(parsed.localPath ?? cleanText(node.filePath)),
+    text: parsed.text,
+    kind: parsed.kind,
+    forward: parsed.forward
+  }
+}
+
+/** 识别并解析批量转发；不是转发或超过嵌套深度时返回 null */
+function parseForward(html: string, depth: number): ParsedMessage | null {
+  if (depth >= FORWARD_MAX_DEPTH) return null
+  const list = readForwardList(html)
+  if (!list) return null
+
+  const items: ForwardNode[] = []
+  for (let i = 0; i < list.length; i++) {
+    const node = toForwardNode(list[i], i, depth + 1)
+    if (node) items.push(node)
+  }
+  if (items.length === 0) return null
+
+  const titleMatch = RE_FORWARD_TITLE.exec(html)
+  const rawTitle = titleMatch ? stripHtml(titleMatch[1]) : ''
+  const title = rawTitle || '聊天记录'
+  return {
+    kind: 'forward',
+    text: title,
+    forward: { title, count: items.length, items }
+  }
+}
+
 /**
  * 将**已解码**的内容解析为结构化消息（供需要复用解码结果的调用方使用）。
  */
@@ -242,11 +361,28 @@ export function parseDecoded(
   messageType: unknown,
   withdrawn: boolean
 ): ParsedMessage {
+  return parseDecodedAt(decoded, messageType, withdrawn, 0)
+}
+
+/** 带嵌套深度的解析实现（批量转发的子消息会递归调用） */
+function parseDecodedAt(
+  decoded: string,
+  messageType: unknown,
+  withdrawn: boolean,
+  depth: number
+): ParsedMessage {
   if (withdrawn) return { kind: 'withdrawn', text: '[消息已撤回]' }
   if (decoded.length === 0) return { kind: 'text', text: '' }
 
   const typeKey = isBlank(messageType) ? '' : String(messageType)
   const hasHtml = RE_HAS_TAG.test(decoded)
+
+  // 批量转发按结构识别，必须先于 messageType 分派：
+  // 实测同一结构会以 messageType=2（图片）与 messageType=5（文本）两种形式出现
+  if (hasHtml) {
+    const forward = parseForward(decoded, depth)
+    if (forward) return forward
+  }
 
   switch (typeKey) {
     case '1':

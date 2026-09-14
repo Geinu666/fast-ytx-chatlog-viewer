@@ -13,6 +13,7 @@ export type MessageKind =
   | 'emoji'
   | 'system'
   | 'withdrawn'
+  | 'forward'
   | 'unknown'
 
 /** 消息来源应用标识 */

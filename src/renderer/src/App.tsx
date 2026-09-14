@@ -8,6 +8,7 @@ import { StatusBar } from './components/layout/StatusBar'
 import { TitleBar } from './components/layout/TitleBar'
 import { MessageTimeline } from './components/message/MessageTimeline'
 import { GlobalSearch } from './components/search/GlobalSearch'
+import { ForwardDialog } from './components/message/ForwardDialog'
 import { Lightbox } from './components/common/Lightbox'
 import { DataSourcePanel } from './components/settings/DataSourcePanel'
 import { useDebouncedValue } from './hooks/useDebounce'
@@ -123,6 +124,9 @@ export default function App() {
       <StatusBar />
 
       <Toast />
+
+      {/* 批量转发浏览弹窗（未打开时不渲染） */}
+      <ForwardDialog />
 
       {/* 图片查看弹窗（未打开时不渲染） */}
       <Lightbox />

@@ -9,8 +9,9 @@ import type { SourceSelection } from '../../shared/types'
  * - v3 起支持「按源增量」构建
  * - v4 起支持「按行增量」构建（source 表新增行级水位字段）
  * - v5 起 message 表新增 local_path（消息的本地缓存绝对路径）
+ * - v6 起新增 forward 消息类型（批量转发按结构解析，kind / text 随之变化）
  */
-export const CACHE_SCHEMA_VERSION = 5
+export const CACHE_SCHEMA_VERSION = 6
 
 /** 单个源库的指纹 */
 export interface SourceFingerprintFile {
