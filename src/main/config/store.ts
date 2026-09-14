@@ -8,7 +8,13 @@ import type { AppConfig, SourceSelection } from '../../shared/types'
  * 记录用户额外添加的扫描目录与数据库文件，以及上次使用的数据源。
  */
 
-const EMPTY: AppConfig = { dataDirs: [], dataFiles: [], lastSelection: null }
+/** 默认不合并历史快照：只解析无时间戳的最新全量库 */
+const EMPTY: AppConfig = {
+  dataDirs: [],
+  dataFiles: [],
+  lastSelection: null,
+  mergeSnapshots: false
+}
 
 let cache: AppConfig | null = null
 
@@ -50,7 +56,9 @@ export function sanitizeConfig(value: unknown): AppConfig {
   return {
     dataDirs: sanitizePathList(input.dataDirs, 50),
     dataFiles: sanitizePathList(input.dataFiles, 200),
-    lastSelection
+    lastSelection,
+    // 未显式设置时默认关闭（折叠历史快照）
+    mergeSnapshots: input.mergeSnapshots === true
   }
 }
 
@@ -58,11 +66,9 @@ export function loadConfig(): AppConfig {
   if (cache) return cache
   try {
     const file = configPath()
-    cache = existsSync(file)
-      ? sanitizeConfig(JSON.parse(readFileSync(file, 'utf8')))
-      : { ...EMPTY, dataDirs: [], dataFiles: [] }
+    cache = existsSync(file) ? sanitizeConfig(JSON.parse(readFileSync(file, 'utf8'))) : { ...EMPTY }
   } catch {
-    cache = { ...EMPTY, dataDirs: [], dataFiles: [] }
+    cache = { ...EMPTY }
   }
   return cache
 }

@@ -17,6 +17,7 @@ interface IndexState {
   refreshConfig: () => Promise<void>
   selectSource: (selection: SourceSelection) => Promise<void>
   rebuild: () => Promise<void>
+  setMergeSnapshots: (enabled: boolean) => Promise<void>
   addDataDir: () => Promise<void>
   addDataFile: () => Promise<void>
   removeDataDir: (path: string) => Promise<void>
@@ -101,6 +102,32 @@ export const useIndexStore = create<IndexState>((set, get) => ({
     try {
       const status = await window.api.rebuildIndex()
       set({ status })
+    } finally {
+      set({ initializing: false })
+    }
+  },
+
+  /**
+   * 切换「合并历史快照」。
+   *
+   * 默认关闭：只解析无时间戳的最新全量库（带时间戳的快照内容被它包含）。
+   * 打开后会逐库合并去重，解码量成倍上升，因此保存后按当前范围重新加载一次。
+   */
+  async setMergeSnapshots(enabled: boolean) {
+    const config = get().config ?? (await window.api.getConfig())
+    if (config.mergeSnapshots === enabled) return
+
+    const next = await window.api.saveConfig({ ...config, mergeSnapshots: enabled })
+    set({ config: next, initializing: true })
+    try {
+      const current = get().status
+      if (current?.selectionKind && current.selectionPath) {
+        const status = await window.api.selectSource({
+          kind: current.selectionKind,
+          path: current.selectionPath
+        })
+        set({ status })
+      }
     } finally {
       set({ initializing: false })
     }

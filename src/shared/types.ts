@@ -150,6 +150,12 @@ export interface DbSource {
   messageCount: number
   /** 该库内最新一条消息的时间戳，用于判断数据新旧（0 表示未知） */
   newestTimestamp: number
+  /** 快照链基名，如 message3763.db 与 message3763-2026-09-14-10-14-37.db 同为 message3763 */
+  baseName: string
+  /** 文件名里的快照时间戳；0 表示无时间戳的「最新全量库」 */
+  snapshotAt: number
+  /** 是否因快照链折叠而未参与解析（仍会列在面板中，供单独选择） */
+  folded: boolean
 }
 
 /** 数据源选择范围：单个文件，或某目录下的全部数据库（合并查看） */
@@ -168,6 +174,13 @@ export interface AppConfig {
   dataFiles: string[]
   /** 上次使用的数据源范围，下次启动优先恢复 */
   lastSelection: SourceSelection | null
+  /**
+   * 目录选择时是否合并历史快照。
+   * 默认 false：只解析无时间戳的「最新全量库」，历史快照整体折叠跳过
+   * （带时间戳的快照是应用退出时保存的整库副本，内容被全量库包含）。
+   * 检测到全量库消息减少（发生删除）时会自动置为 true 并提示。
+   */
+  mergeSnapshots?: boolean
 }
 
 /** 索引缓存状态 */
@@ -179,8 +192,12 @@ export interface IndexStatus {
   selectionPath: string | null
   /** 实际参与合并的数据库文件（已按优先级排序） */
   includedFiles: string[]
+  /** 因快照链折叠而未参与解析的历史快照（仅目录选择时可能出现） */
+  foldedFiles: string[]
   /** 合并时因消息 ID 重复而被跳过的条数 */
   duplicateMessages: number
+  /** 是否因检测到全量库消息减少而自动回退为「合并历史快照」模式 */
+  autoMerged: boolean
   /** 展示用名称 */
   sourceName: string | null
   cachePath: string | null

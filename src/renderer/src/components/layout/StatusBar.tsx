@@ -12,6 +12,7 @@ export function StatusBar() {
   const loadingMessages = useChatStore((state) => state.loadingMessages)
 
   const phase = status?.phase ?? 'idle'
+  const foldedCount = status?.foldedFiles?.length ?? 0
 
   return (
     <footer className="z-30 flex h-8 shrink-0 items-center gap-4 border-t border-line/10 bg-surface-900/85 px-3 text-micro text-ink-600 backdrop-blur-xl">
@@ -24,12 +25,24 @@ export function StatusBar() {
       <span className="hidden xl:inline">
         索引缓存 <b className="text-ink-400">{formatBytes(status?.cacheSizeBytes ?? 0)}</b>
       </span>
-      {(status?.includedFiles.length ?? 0) > 1 && (
+      {foldedCount > 0 ? (
         <span className="hidden lg:inline">
-          合并 <b className="text-brand-cyan">{status?.includedFiles.length}</b> 个库
-          {status?.duplicateMessages
-            ? ` · 去重 ${formatCount(status.duplicateMessages)}`
-            : ''}
+          解析 <b className="text-brand-cyan">{status?.includedFiles.length ?? 0}</b> 个全量库 ·
+          折叠 <b className="text-brand-cyan">{foldedCount}</b> 个历史快照
+        </span>
+      ) : (
+        (status?.includedFiles.length ?? 0) > 1 && (
+          <span className="hidden lg:inline">
+            合并 <b className="text-brand-cyan">{status?.includedFiles.length}</b> 个库
+            {status?.duplicateMessages
+              ? ` · 去重 ${formatCount(status.duplicateMessages)}`
+              : ''}
+          </span>
+        )
+      )}
+      {status?.autoMerged && (
+        <span className="hidden lg:inline text-state-warn" title="检测到全量库消息减少，已自动合并历史快照">
+          已自动合并快照
         </span>
       )}
       <span className="hidden lg:inline">

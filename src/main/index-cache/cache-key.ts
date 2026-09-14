@@ -1,11 +1,15 @@
 import { app } from 'electron'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { SourceSelection } from '../../shared/types'
 
-/** 缓存结构版本：结构变更时递增即可自动失效旧缓存（v3 起支持增量构建） */
-export const CACHE_SCHEMA_VERSION = 3
+/**
+ * 缓存结构版本：结构变更时递增即可自动失效旧缓存。
+ * - v3 起支持「按源增量」构建
+ * - v4 起支持「按行增量」构建（source 表新增行级水位字段）
+ */
+export const CACHE_SCHEMA_VERSION = 4
 
 /** 单个源库的指纹 */
 export interface SourceFingerprintFile {
@@ -38,6 +42,32 @@ export function cacheDir(): string {
   return dir
 }
 
+/** 缓存文件名前缀（含结构版本），便于识别并清理历史版本的残留 */
+function cacheFilePrefix(): string {
+  return `idx-v${CACHE_SCHEMA_VERSION}-`
+}
+
+let pruned = false
+
+/** 清理历史结构版本遗留的缓存文件（每次进程只执行一次） */
+function pruneStaleCaches(dir: string): void {
+  if (pruned) return
+  pruned = true
+  const prefix = cacheFilePrefix()
+  try {
+    for (const name of readdirSync(dir)) {
+      if (!name.startsWith('idx-') || name.startsWith(prefix)) continue
+      try {
+        rmSync(join(dir, name), { force: true })
+      } catch {
+        // 文件被占用时忽略，下次启动再清
+      }
+    }
+  } catch {
+    // 目录不可读时忽略
+  }
+}
+
 /**
  * 缓存文件按「选择范围」命名，而不是按文件集合命名。
  * 这样范围内的文件发生增删/变化时仍复用同一个缓存文件，从而走增量更新，
@@ -48,7 +78,9 @@ export function cachePathForScope(selection: SourceSelection): string {
     .update(`${selection.kind}|${selection.path}|v${CACHE_SCHEMA_VERSION}`)
     .digest('hex')
     .slice(0, 16)
-  return join(cacheDir(), `idx-${hash}.db`)
+  const dir = cacheDir()
+  pruneStaleCaches(dir)
+  return join(dir, `${cacheFilePrefix()}${hash}.db`)
 }
 
 export function fileSize(path: string | null): number {

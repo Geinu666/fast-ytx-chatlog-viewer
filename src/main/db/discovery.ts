@@ -20,10 +20,18 @@ import { peekStats } from './stats'
  *
  * 性能约定：本模块只做**廉价**探测（读取 sqlite_master 判断表结构），
  * 不做 COUNT(*) / MAX(timestamp) 这类全表扫描；统计信息由 stats.ts 惰性补齐。
+ *
+ * 快照链：猿通讯每次退出会把整库另存为 `message3763-2026-09-14-10-14-37.db`
+ * 这类带时间戳的历史快照，它们**整体包含于**无时间戳的 `message3763.db`。
+ * 因此目录选择时默认只解析无时间戳的那一份（见 collapseSnapshotChains），
+ * 避免重复解码数倍的数据量。
  */
 
 /** 约定文件名：message.db / message3763.db 等 */
 const CONVENTION_NAME = /^message\w*\.db$/i
+
+/** 快照文件名后缀：-2026-09-14-10-14-37 */
+const SNAPSHOT_SUFFIX = /^(.*?)-(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})$/i
 
 const REQUIRED_TABLES = ['message_list', 'chat_list']
 
@@ -102,12 +110,44 @@ function configKey(): string {
   return `${config.dataDirs.join('|')}::${config.dataFiles.join('|')}`
 }
 
+/**
+ * 把文件名拆成「快照链基名 + 快照时间」。
+ *
+ * - `message3763.db`                  → { base: 'message3763', snapshotAt: 0 }   最新全量库
+ * - `message3763-2026-09-14-10-14-37.db` → { base: 'message3763', snapshotAt: … } 历史快照
+ *
+ * 时间非法时用 -1 标记「是快照但时间未知」，避免被误判成全量库。
+ */
+export function parseSnapshotName(fileName: string): { base: string; snapshotAt: number } {
+  const stem = fileName.replace(/\.db$/i, '')
+  const matched = SNAPSHOT_SUFFIX.exec(stem)
+  if (!matched) return { base: stem, snapshotAt: 0 }
+
+  const at = new Date(
+    Number(matched[2]),
+    Number(matched[3]) - 1,
+    Number(matched[4]),
+    Number(matched[5]),
+    Number(matched[6]),
+    Number(matched[7])
+  ).getTime()
+
+  return { base: matched[1], snapshotAt: Number.isFinite(at) ? at : -1 }
+}
+
+/** 是否带时间戳的历史快照 */
+export function isSnapshotName(source: DbSource): boolean {
+  return source.snapshotAt !== 0
+}
+
 /** 廉价的可用性探测：只读取 sqlite_master */
 function inspect(filePath: string, origin: DbSource['origin'], inBoctx: boolean): DbSource {
   const stat = statSync(filePath)
+  const fileName = basename(filePath)
+  const { base, snapshotAt } = parseSnapshotName(fileName)
   const source: DbSource = {
     path: filePath,
-    fileName: basename(filePath),
+    fileName,
     sizeBytes: stat.size,
     modifiedAt: Math.round(stat.mtimeMs),
     valid: false,
@@ -115,7 +155,10 @@ function inspect(filePath: string, origin: DbSource['origin'], inBoctx: boolean)
     origin,
     inBoctx,
     messageCount: 0,
-    newestTimestamp: 0
+    newestTimestamp: 0,
+    baseName: base,
+    snapshotAt,
+    folded: false
   }
 
   let db: Database.Database | null = null
@@ -241,6 +284,79 @@ export function sourcesInDirectory(dir: string): DbSource[] {
     }
   }
   return sources.sort(compareSources)
+}
+
+/**
+ * 快照链折叠：把「最新全量库 + 历史快照」压成一份，只解析全量库。
+ *
+ * 规则（与实测一致：带时间戳的快照是退出时的整库副本，内容被全量库包含）：
+ * 1. 同一目录、同一基名（`message3763`）为一组；
+ *    组内存在无时间戳的全量库 → 只保留它；
+ * 2. 组内只有快照（用户手工删过全量库）→ 保留快照时间最新的一份；
+ * 3. 跨目录出现「基名相同且 size + mtime 完全一致」的文件 → 判为同一份拷贝
+ *    （例如 release/win-unpacked 下的副本），只保留优先级最高的一份。
+ *
+ * 返回值里 `kept` 参与解析，`folded` 仅用于界面提示，仍会列在数据源面板中供单独选择。
+ * 不会跨基名合并，`message3761.db` 与 `message3763.db` 始终是两条独立的链。
+ */
+export function collapseSnapshotChains(sources: DbSource[]): {
+  kept: DbSource[]
+  folded: DbSource[]
+} {
+  const folded: DbSource[] = []
+
+  // 1. 同目录 + 同基名分组，组内只留一份
+  const groups = new Map<string, DbSource[]>()
+  for (const source of sources) {
+    const key = `${dirname(source.path).toLowerCase()}|${source.baseName.toLowerCase()}`
+    const bucket = groups.get(key)
+    if (bucket) bucket.push(source)
+    else groups.set(key, [source])
+  }
+
+  const winners: DbSource[] = []
+  for (const bucket of groups.values()) {
+    if (bucket.length === 1) {
+      winners.push(bucket[0])
+      continue
+    }
+    const live = bucket.find((item) => item.snapshotAt === 0)
+    const winner = live ?? [...bucket].sort(compareSources)[0]
+    winners.push(winner)
+    for (const item of bucket) {
+      if (item !== winner) folded.push({ ...item, folded: true })
+    }
+  }
+
+  // 2. 跨目录的同名副本：基名相同 + 字节数与修改时间全等 → 视为同一份拷贝
+  const byBase = new Map<string, DbSource[]>()
+  for (const source of winners) {
+    const key = source.baseName.toLowerCase()
+    const bucket = byBase.get(key)
+    if (bucket) bucket.push(source)
+    else byBase.set(key, [source])
+  }
+
+  const kept: DbSource[] = []
+  for (const bucket of byBase.values()) {
+    if (bucket.length === 1) {
+      kept.push(bucket[0])
+      continue
+    }
+    const ordered = [...bucket].sort(compareSources)
+    const seen = new Set<string>()
+    for (const source of ordered) {
+      const signature = `${source.sizeBytes}|${source.modifiedAt}`
+      if (seen.has(signature)) {
+        folded.push({ ...source, folded: true })
+        continue
+      }
+      seen.add(signature)
+      kept.push(source)
+    }
+  }
+
+  return { kept: kept.sort(compareSources), folded: folded.sort(compareSources) }
 }
 
 /** 扫描全部来源并返回去重后的数据源列表（带短时缓存） */

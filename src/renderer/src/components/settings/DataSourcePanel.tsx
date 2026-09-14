@@ -24,6 +24,8 @@ const dirnameOf = (path: string): string => path.replace(/[\\/][^\\/]*$/, '')
 interface DirGroup {
   dir: string
   files: DbSource[]
+  /** 其中被快照链折叠、本次未参与解析的历史快照数 */
+  folded: number
   newest: number
   total: number
 }
@@ -38,6 +40,7 @@ export function DataSourcePanel() {
   const rebuild = useIndexStore((state) => state.rebuild)
   const refreshSources = useIndexStore((state) => state.refreshSources)
   const loadStats = useIndexStore((state) => state.loadStats)
+  const setMergeSnapshots = useIndexStore((state) => state.setMergeSnapshots)
   const initializing = useIndexStore((state) => state.initializing)
   const loadingSources = useIndexStore((state) => state.loadingSources)
   const statsLoading = useIndexStore((state) => state.statsLoading)
@@ -47,6 +50,12 @@ export function DataSourcePanel() {
   const busy = initializing || building
   const activeDir = status?.selectionKind === 'dir' ? status.selectionPath : null
   const activeFile = status?.selectionKind === 'file' ? status.selectionPath : null
+  // 主进程可能因检测到消息减少而自动打开合并（此时配置会同步落盘，但本帧内先用 status 兜底）
+  const mergeSnapshots = config?.mergeSnapshots === true || status?.autoMerged === true
+  const foldedCount = status?.foldedFiles?.length ?? 0
+
+  // 主进程给出的「被折叠的历史快照」清单，用于分组计数与逐条标注
+  const foldedSet = useMemo(() => new Set(status?.foldedFiles ?? []), [status?.foldedFiles])
 
   const dirGroups = useMemo<DirGroup[]>(() => {
     const dirs = new Set<string>(defaultDirs)
@@ -66,6 +75,7 @@ export function DataSourcePanel() {
         return {
           dir,
           files,
+          folded: files.filter((file) => foldedSet.has(file.path)).length,
           newest: files.reduce((max, file) => Math.max(max, file.newestTimestamp), 0),
           total: files.reduce((sum, file) => sum + file.messageCount, 0)
         }
@@ -74,7 +84,7 @@ export function DataSourcePanel() {
         (a, b) =>
           b.newest - a.newest || b.files.length - a.files.length || a.dir.localeCompare(b.dir)
       )
-  }, [sources, defaultDirs, config])
+  }, [sources, defaultDirs, config, foldedSet])
 
   const handleSelectDir = async (group: DirGroup): Promise<void> => {
     if (busy || group.files.length === 0) return
@@ -157,9 +167,17 @@ export function DataSourcePanel() {
                   </dd>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <dt className="shrink-0 text-ink-600">参与合并</dt>
+                  <dt className="shrink-0 text-ink-600">参与解析</dt>
                   <dd className="text-ink-400">{status?.includedFiles.length ?? 0} 个数据库</dd>
                 </div>
+                {foldedCount > 0 && (
+                  <div className="flex items-center justify-between gap-3">
+                    <dt className="shrink-0 text-ink-600">已折叠快照</dt>
+                    <dd className="text-ink-400" title={status?.foldedFiles.join('\n') ?? ''}>
+                      {foldedCount} 个（内容已被全量库包含）
+                    </dd>
+                  </div>
+                )}
                 <div className="flex items-center justify-between gap-3">
                   <dt className="shrink-0 text-ink-600">重复去重</dt>
                   <dd className="text-ink-400">
@@ -203,14 +221,54 @@ export function DataSourcePanel() {
               </button>
             </div>
 
-            <p className="mb-2 flex items-center gap-1.5 rounded-lg border border-brand-indigo/25 bg-brand-indigo/8 px-3 py-2 text-micro leading-5 text-ink-400">
-              <Layers size={12} className="shrink-0 text-brand-indigo" />
-              选择「目录」即可查看该目录下**全部数据库**合并去重后的聊天记录；选择单个文件则只看该库。
-              同一消息按 ID 去重，保留数据较新那份的版本。
+            <div className="mb-2 flex items-start gap-2.5 rounded-xl border border-line/10 bg-surface-900/45 px-3 py-2">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={mergeSnapshots}
+                disabled={busy}
+                onClick={() => void setMergeSnapshots(!mergeSnapshots)}
+                title="关闭后只解析无时间戳的最新全量库，历史快照整体折叠跳过"
+                className={cn(
+                  'relative mt-0.5 h-4 w-8 shrink-0 rounded-full border transition-colors duration-200',
+                  mergeSnapshots
+                    ? 'border-brand-indigo/50 bg-brand-indigo/60'
+                    : 'border-line/20 bg-surface-600/60',
+                  busy && 'cursor-not-allowed opacity-55'
+                )}
+              >
+                <span
+                  className={cn(
+                    'absolute top-1/2 h-3 w-3 -translate-y-1/2 rounded-full bg-white transition-all duration-200',
+                    mergeSnapshots ? 'left-[17px]' : 'left-0.5'
+                  )}
+                />
+              </button>
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span className="text-micro text-ink-100">合并历史快照</span>
+                <span className="text-micro leading-5 text-ink-600">
+                  默认关闭：只解析无时间戳的最新全量库。带时间戳的
+                  <code> message3763-2026-….db </code>
+                  是上次退出时保存的整库副本，内容被全量库包含，默认整体折叠跳过。
+                </span>
+              </span>
+              {status?.autoMerged && (
+                <span className="ml-auto shrink-0 rounded-full bg-state-warn/20 px-1.5 text-micro text-state-warn">
+                  已自动开启
+                </span>
+              )}
+            </div>
+
+            <p className="mb-2 flex items-start gap-1.5 rounded-lg border border-brand-indigo/25 bg-brand-indigo/8 px-3 py-2 text-micro leading-5 text-ink-400">
+              <Layers size={12} className="mt-0.5 shrink-0 text-brand-indigo" />
+              <span>
+                选择「目录」即可查看该目录下的聊天记录；选择单个文件则只看该库。多条来源合并时按消息
+                ID 去重，保留数据较新那份的版本。
+              </span>
             </p>
 
             <h4 className="mb-1.5 mt-3 flex items-center gap-1.5 text-micro text-ink-600">
-              <FolderTree size={11} /> 按目录合并
+              <FolderTree size={11} /> 按目录查看
             </h4>
             <div className="flex flex-col gap-1.5">
               {dirGroups.map((group) => {
@@ -240,7 +298,11 @@ export function DataSourcePanel() {
                         </span>
                       )}
                       <span className="ml-auto shrink-0 text-micro text-ink-600">
-                        {group.files.length > 0 ? `${group.files.length} 个库` : '无可用库'}
+                        {group.files.length === 0
+                          ? '无可用库'
+                          : group.folded > 0
+                            ? `${group.files.length} 个库 · 折叠 ${group.folded} 个快照`
+                            : `${group.files.length} 个库`}
                       </span>
                     </span>
                     {group.files.length > 0 && (
@@ -297,6 +359,11 @@ export function DataSourcePanel() {
                       {source.inBoctx && (
                         <span className="shrink-0 rounded-full bg-state-ok/18 px-1.5 text-micro text-state-ok">
                           猿通讯默认路径
+                        </span>
+                      )}
+                      {foldedSet.has(source.path) && (
+                        <span className="shrink-0 rounded-full bg-surface-600/70 px-1.5 text-micro text-ink-400">
+                          已折叠
                         </span>
                       )}
                       {!source.valid && (

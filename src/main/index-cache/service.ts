@@ -3,8 +3,9 @@ import Database from 'better-sqlite3'
 import { basename } from 'node:path'
 import { IPC } from '../../shared/ipc-channels'
 import type { DbSource, IndexStatus, SourceSelection } from '../../shared/types'
-import { rememberSelection } from '../config/store'
+import { loadConfig, rememberSelection, saveConfig } from '../config/store'
 import {
+  collapseSnapshotChains,
   discoverSources,
   invalidateDiscovery,
   pickDefaultSelection,
@@ -19,9 +20,11 @@ import { ChatRepository } from './repository'
 /**
  * 索引服务：负责数据源范围选择、缓存构建（含进度回传）与仓储生命周期。
  *
- * 选择范围可以是**单个文件**，也可以是**一个目录**——后者会递归收集该目录下
- * 全部可用数据库并按消息 ID 合并去重。构建是**增量**的：只有新增、指纹变化或
- * 上次未能完整收录的源库才会被重新解码，其余直接复用缓存中的行。
+ * 选择范围可以是**单个文件**，也可以是**一个目录**——后者默认只解析无时间戳的
+ * 「最新全量库」，把每次退出时保存的带时间戳历史快照整体折叠跳过（它们的内容被
+ * 全量库包含）；也可通过配置打开「合并历史快照」逐库合并去重。
+ *
+ * 构建是**增量**的，分三级复用：整源复用 → 只追加新行的行级增量 → 整库重解析。
  *
  * 所有源库均以只读方式打开，写操作仅发生在 userData 下的缓存库。
  */
@@ -30,7 +33,9 @@ const EMPTY_STATUS: IndexStatus = {
   selectionKind: null,
   selectionPath: null,
   includedFiles: [],
+  foldedFiles: [],
   duplicateMessages: 0,
+  autoMerged: false,
   sourceName: null,
   cachePath: null,
   cacheSizeBytes: 0,
@@ -41,7 +46,7 @@ const EMPTY_STATUS: IndexStatus = {
 }
 
 class IndexService {
-  private status: IndexStatus = { ...EMPTY_STATUS, includedFiles: [] }
+  private status: IndexStatus = { ...EMPTY_STATUS, includedFiles: [], foldedFiles: [] }
   private cacheDb: Database.Database | null = null
   private repo: ChatRepository | null = null
   private pending: Promise<IndexStatus> | null = null
@@ -49,7 +54,11 @@ class IndexService {
   private statsRunning = false
 
   getStatus(): IndexStatus {
-    return { ...this.status, includedFiles: [...this.status.includedFiles] }
+    return {
+      ...this.status,
+      includedFiles: [...this.status.includedFiles],
+      foldedFiles: [...this.status.foldedFiles]
+    }
   }
 
   getRepository(): ChatRepository | null {
@@ -60,13 +69,27 @@ class IndexService {
     return discoverSources(force)
   }
 
-  /** 把选择范围解析为具体的数据库文件列表（按合并优先级排序） */
-  resolveSelection(selection: SourceSelection): DbSource[] {
+  /**
+   * 把选择范围解析为「参与解析的文件」与「被折叠的历史快照」。
+   *
+   * 目录选择时默认做快照链折叠：带时间戳的历史快照是猿通讯退出时保存的整库副本，
+   * 内容被无时间戳的最新全量库包含，只解析后者即可。forceMerge 或配置里打开
+   * 「合并历史快照」时不折叠，按优先级逐库合并去重。
+   */
+  resolveSelection(
+    selection: SourceSelection,
+    forceMerge = false
+  ): { kept: DbSource[]; folded: DbSource[] } {
     if (selection.kind === 'file') {
       const source = sourceForFile(selection.path)
-      return source ? [source] : []
+      return { kept: source ? [source] : [], folded: [] }
     }
-    return sourcesInDirectory(selection.path)
+
+    const all = sourcesInDirectory(selection.path)
+    if (forceMerge || loadConfig().mergeSnapshots === true) {
+      return { kept: all, folded: [] }
+    }
+    return collapseSnapshotChains(all)
   }
 
   /** 首次调用时自动挑选默认范围并准备索引 */
@@ -138,14 +161,15 @@ class IndexService {
     return this.pending
   }
 
-  private async doLoad(selection: SourceSelection): Promise<IndexStatus> {
+  private async doLoad(selection: SourceSelection, forceMerge = false): Promise<IndexStatus> {
     this.closeCache()
 
-    const files = this.resolveSelection(selection)
+    const { kept: files, folded } = this.resolveSelection(selection, forceMerge)
     if (files.length === 0) {
       this.status = {
         ...EMPTY_STATUS,
         includedFiles: [],
+        foldedFiles: [],
         phase: 'error',
         selectionKind: selection.kind,
         selectionPath: selection.path,
@@ -160,12 +184,14 @@ class IndexService {
     }
 
     const paths = files.map((item) => item.path)
+    const foldedPaths = folded.map((item) => item.path)
     const fingerprints = fingerprintFor(paths)
     const cachePath = cachePathForScope(selection)
     const current = isCacheCurrent(cachePath, fingerprints)
+    const foldText = folded.length > 0 ? ` · 已折叠 ${folded.length} 个历史快照` : ''
     const sourceName =
       selection.kind === 'dir'
-        ? `${basename(selection.path) || selection.path} · 合并 ${files.length} 个库`
+        ? `${basename(selection.path) || selection.path} · 最新全量库 ${files.length} 个${foldText}`
         : files[0].fileName
 
     this.status = {
@@ -174,12 +200,14 @@ class IndexService {
       selectionKind: selection.kind,
       selectionPath: selection.path,
       includedFiles: paths,
+      foldedFiles: foldedPaths,
+      autoMerged: forceMerge,
       sourceName,
       cachePath,
       cacheSizeBytes: fileSize(cachePath),
       progress: current ? 1 : 0,
       message: current
-        ? `已复用索引缓存（${files.length} 个库）`
+        ? `已复用索引缓存（${files.length} 个库${foldText}）`
         : `正在准备 ${files.length} 个数据库…`
     }
     this.selection = selection
@@ -210,6 +238,7 @@ class IndexService {
 
       const dedupeText =
         result.duplicateMessages > 0 ? `，去重 ${result.duplicateMessages} 条` : ''
+      const appendText = result.appendedFiles > 0 ? `，追加 ${result.appendedMessages} 条` : ''
       const prefix = result.incremental
         ? `增量更新完成（重新解析 ${result.decodedFiles} 个库、复用 ${result.reusedFiles} 个）`
         : `合并完成`
@@ -217,7 +246,25 @@ class IndexService {
         ...this.status,
         duplicateMessages: result.duplicateMessages,
         buildMs: result.buildMs,
-        message: `${prefix}，共 ${result.messageCount} 条消息${dedupeText}`
+        message: `${prefix}，共 ${result.messageCount} 条消息${appendText}${dedupeText}`
+      }
+
+      // 折叠模式下若发现全量库的消息数比上次少（库内发生过删除），历史快照里可能存有
+      // 已被删掉的消息。此时自动改为「合并历史快照」并持久化，避免历史被静默丢掉。
+      if (
+        result.decreased &&
+        !forceMerge &&
+        folded.length > 0 &&
+        loadConfig().mergeSnapshots !== true
+      ) {
+        saveConfig({ ...loadConfig(), mergeSnapshots: true })
+        invalidateDiscovery()
+        this.status = {
+          ...this.status,
+          message: '检测到最新全量库消息减少，已自动改为合并历史快照以补齐历史…'
+        }
+        this.emit()
+        return this.doLoad(selection, true)
       }
     }
 
@@ -233,7 +280,7 @@ class IndexService {
         ...this.status,
         duplicateMessages: duplicates,
         message:
-          `已复用索引缓存（${files.length} 个库），共 ${total} 条消息` +
+          `已复用索引缓存（${files.length} 个库${foldText}），共 ${total} 条消息` +
           (duplicates > 0 ? `（去重 ${duplicates} 条）` : '')
       }
     }

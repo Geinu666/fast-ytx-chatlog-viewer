@@ -28,6 +28,12 @@ export interface BuildResult {
   decodedFiles: number
   /** 直接复用缓存、未重新解码的源库数 */
   reusedFiles: number
+  /** 本次走「只追加新消息」行级增量的源库数 */
+  appendedFiles: number
+  /** 行级增量实际新增的消息条数 */
+  appendedMessages: number
+  /** 是否有源库的消息数比上次减少（库内发生删除） */
+  decreased: boolean
   incremental: boolean
   buildMs: number
 }
@@ -41,7 +47,12 @@ CREATE TABLE source(
   rank INTEGER NOT NULL DEFAULT 0,
   inserted_rows INTEGER NOT NULL DEFAULT 0,
   stored_rows INTEGER NOT NULL DEFAULT 0,
-  complete INTEGER NOT NULL DEFAULT 1
+  complete INTEGER NOT NULL DEFAULT 1,
+  wm_count INTEGER NOT NULL DEFAULT 0,
+  wm_rowid INTEGER NOT NULL DEFAULT 0,
+  wm_sum_rowid INTEGER NOT NULL DEFAULT 0,
+  wm_withdrawn INTEGER NOT NULL DEFAULT 0,
+  wm_top_id TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE chat(
   id TEXT PRIMARY KEY,
@@ -135,7 +146,54 @@ interface StoredSource {
   inserted_rows: number
   stored_rows: number
   complete: number
+  /** 上次成功解析时源库的行数（行级增量水位） */
+  wm_count: number
+  /** 上次成功解析时源库的 MAX(rowid) */
+  wm_rowid: number
+  /** 上次成功解析时源库的 SUM(rowid)，用于察觉「删掉最大 rowid 后被复用」这类隐蔽变化 */
+  wm_sum_rowid: number
+  /** 上次成功解析时源库中已撤回消息的条数，用于察觉旧消息被改动 */
+  wm_withdrawn: number
+  /** 上次成功解析时 `rowid = wm_rowid` 那一行的 id，作为水位锚点 */
+  wm_top_id: string
 }
+
+/** 源库水位探测结果 */
+interface SourceProbe {
+  /** 库内消息总行数 */
+  count: number
+  /** SUM(rowid) */
+  sumRowid: number
+  /** MAX(rowid) */
+  maxRowid: number
+  /** 已撤回消息条数 */
+  withdrawn: number
+  /** rowid 是否可用（WITHOUT ROWID 表不可用，此时只能整库重解析） */
+  rowidOk: boolean
+  /** rowid > 水位 的行数（仅对已有水位的源有意义） */
+  appendedCount: number
+  /** rowid > 水位 的行 id 之和 */
+  appendedSum: number
+  /** 当前 `rowid = 水位` 那一行的 id；锚点被替换或消失时返回空串 */
+  anchorId: string
+  /** 当前 `rowid = MAX(rowid)` 那一行的 id，成功解析后写回 wm_top_id */
+  topId: string
+}
+
+const MESSAGE_COLUMNS = `SELECT id, name, chatId, fromId, avatar, type, at, content, timestamp,
+                                mine, withDraw, strDate, messageType
+                         FROM message_list`
+
+const PROBE_SQL = `
+SELECT COUNT(*) AS count,
+       IFNULL(SUM(rowid), 0) AS sumRowid,
+       IFNULL(MAX(rowid), 0) AS maxRowid,
+       IFNULL(SUM(CASE WHEN lower(IFNULL(CAST(withDraw AS TEXT), '')) = 'true' THEN 1 ELSE 0 END), 0) AS withdrawn
+FROM message_list`
+
+const PROBE_APPENDED_SQL = `
+SELECT COUNT(*) AS count, IFNULL(SUM(rowid), 0) AS sumRowid
+FROM message_list WHERE rowid > ?`
 
 const nextTick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
 
@@ -164,10 +222,131 @@ function hasSchema(db: Database.Database): boolean {
 function readSources(db: Database.Database): Map<string, StoredSource> {
   const rows = db
     .prepare(
-      'SELECT id, path, fingerprint, rank, inserted_rows, stored_rows, complete FROM source'
+      `SELECT id, path, fingerprint, rank, inserted_rows, stored_rows, complete,
+              wm_count, wm_rowid, wm_sum_rowid, wm_withdrawn, wm_top_id
+       FROM source`
     )
     .all() as StoredSource[]
   return new Map(rows.map((row) => [row.path, row]))
+}
+
+/** 读取指定 rowid 上那一行的 id（走 rowid 主键，O(log n)） */
+function idAtRowid(db: Database.Database, rowid: number): string {
+  try {
+    const row = db.prepare('SELECT id FROM message_list WHERE rowid = ?').get(rowid) as
+      | { id: string }
+      | undefined
+    return row ? cleanText(row.id) : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 探测源库水位。
+ *
+ * 主查询要读整张表（含 withDraw 列），在十万级消息上约几十毫秒；
+ * 只会在「文件指纹发生变化」时执行，不影响缓存命中的启动路径。
+ * 若源库是 WITHOUT ROWID 表或 rowid 不可用，则退化为「只统计行数」，
+ * 该源将始终走整库重解析。
+ */
+function probeSource(filePath: string, watermark: number): SourceProbe {
+  const result: SourceProbe = {
+    count: 0,
+    sumRowid: 0,
+    maxRowid: 0,
+    withdrawn: 0,
+    rowidOk: false,
+    appendedCount: 0,
+    appendedSum: 0,
+    anchorId: '',
+    topId: ''
+  }
+
+  let db: Database.Database | null = null
+  try {
+    db = new Database(filePath, { readonly: true, fileMustExist: true, timeout: 2000 })
+
+    // rowid 被同名列遮蔽时不能作为水位，退化为「只统计行数」
+    const columns = db.pragma('table_info(message_list)') as Array<{ name: string }>
+    if (
+      columns.some((column) => ['rowid', 'oid', '_rowid_'].includes(column.name.toLowerCase()))
+    ) {
+      const row = db.prepare('SELECT COUNT(*) AS count FROM message_list').get() as {
+        count: number
+      }
+      return { ...result, count: row.count }
+    }
+
+    try {
+      const row = db.prepare(PROBE_SQL).get() as {
+        count: number
+        sumRowid: number
+        maxRowid: number
+        withdrawn: number
+      }
+      let appended = { count: 0, sumRowid: 0 }
+      if (watermark > 0) {
+        appended = db.prepare(PROBE_APPENDED_SQL).get(watermark) as {
+          count: number
+          sumRowid: number
+        }
+      }
+      return {
+        count: row.count,
+        sumRowid: row.sumRowid,
+        maxRowid: row.maxRowid,
+        withdrawn: row.withdrawn,
+        rowidOk: true,
+        appendedCount: appended.count,
+        appendedSum: appended.sumRowid,
+        // 水位那一行还在不在、还是不是原来那条消息
+        anchorId: watermark > 0 ? idAtRowid(db, watermark) : '',
+        topId: row.maxRowid > 0 ? idAtRowid(db, row.maxRowid) : ''
+      }
+    } catch {
+      const row = db.prepare('SELECT COUNT(*) AS count FROM message_list').get() as {
+        count: number
+      }
+      return { ...result, count: row.count }
+    }
+  } catch {
+    return result
+  } finally {
+    if (db) db.close()
+  }
+}
+
+/**
+ * 纯追加判定：源库当前内容是否恰好等于「上次解析的集合 ∪ rowid > 水位的新行」。
+ *
+ * 各条件拦截的变化类型：
+ * - `count`     对不上 → 中间有行被删除（SQLite 只在删除「最大 rowid」时才可能补洞，
+ *                        删中间行会留下永久空洞，行数必然对不上）
+ * - `sumRowid`  对不上 → 水位上的行被替换成了别的 rowid
+ * - `maxRowid`  对不上 → rowid 不再从水位连续增长，或文件被 VACUUM 重写
+ * - `withdrawn` 变化   → 旧消息被撤回（行数不变，但内容已被改写）
+ * - `anchorId`  变化   → **删掉最大 rowid 那一行后，新行复用了同一个 rowid**。
+ *                        此时行数与 rowid 之和都恰好还原，只有比对「水位那一行的
+ *                        消息 id」才能发现那一行已经不是原来那条消息了。
+ *
+ * 判定失败即回退为整库重解析，因此只是「损失一点速度」，不会丢数据。
+ */
+function isPureAppend(previous: StoredSource, probe: SourceProbe): boolean {
+  if (!probe.rowidOk || previous.wm_rowid <= 0 || previous.wm_top_id === '') return false
+  return (
+    probe.count === previous.wm_count + probe.appendedCount &&
+    probe.sumRowid === previous.wm_sum_rowid + probe.appendedSum &&
+    probe.maxRowid === previous.wm_rowid + probe.appendedCount &&
+    probe.withdrawn === previous.wm_withdrawn &&
+    probe.anchorId === previous.wm_top_id
+  )
+}
+
+/** 该源上次解析时的行数基线（用于判断库内是否发生删除） */
+function baselineRows(previous: StoredSource | null): number {
+  if (!previous) return 0
+  return previous.wm_count > 0 ? previous.wm_count : previous.inserted_rows
 }
 
 /** 缓存是否与当前文件集合完全一致（可直接使用，无需任何构建） */
@@ -197,8 +376,13 @@ export function isCacheCurrent(cachePath: string, files: SourceFingerprintFile[]
 /**
  * 构建 / 增量更新索引缓存。
  *
- * - 只重新解码「新增、指纹变化、或上次去重导致数据不完整」的源库，其余直接复用缓存行
- * - 以 (src_rank, row_id) 取优去重，优先级高的源库胜出
+ * 三级复用，越靠前越省：
+ * 1. **整源复用**：指纹（路径 + 大小 + 修改时间）未变且上次收录完整 → 直接用缓存里的行；
+ * 2. **行级增量**：指纹变了但通过「纯追加判定」（行数、SUM/MAX(rowid)、撤回数全部对得上）
+ *    → 只解码 `rowid > 水位` 的新行，十万级消息库通常几十毫秒；
+ * 3. **整库重解析**：判定不通过（发生删除、撤回、VACUUM 等）→ 清空该源的缓存行后重读。
+ *
+ * 去重以 (src_rank, row_id) 取优，优先级高的源库胜出。
  */
 export async function buildIndex(
   files: SourceFingerprintFile[],
@@ -249,7 +433,7 @@ export async function buildIndex(
       rank: number
       id: number
       fingerprint: string
-      previousInserted: number
+      previous: StoredSource | null
     }> = []
     const deferred: typeof toDecode = []
     let reusedFiles = 0
@@ -273,7 +457,7 @@ export async function buildIndex(
         rank: item.rank,
         id: previous?.id ?? 0,
         fingerprint: item.fingerprint,
-        previousInserted: previous?.inserted_rows ?? 0
+        previous: previous ?? null
       }
 
       if (!previous || previous.fingerprint !== item.fingerprint) {
@@ -306,41 +490,58 @@ export async function buildIndex(
       cache.prepare('DELETE FROM source WHERE id = ?').run(previous.id)
     }
 
-    // 3. 统计待解码源的消息量（用于进度），并据此判断是否有源「消息数减少」
-    const counts = new Map<string, number>()
-    const measure = (file: SourceFingerprintFile): number => {
-      let count = 0
-      let db: Database.Database | null = null
-      try {
-        db = new Database(file.path, { readonly: true, fileMustExist: true })
-        count = (db.prepare('SELECT COUNT(*) AS c FROM message_list').get() as { c: number }).c
-      } catch {
-        count = 0
-      } finally {
-        if (db) db.close()
-      }
-      counts.set(file.path, count)
-      return count
+    // 3. 探测待解码源的水位（行数 / SUM(rowid) / MAX(rowid) / 撤回数）
+    //
+    // 既用于进度显示，也用于判定该源能否走「只追加新消息」的行级增量。
+    // 主查询是整表扫描，因此逐文件让出事件循环保持界面响应。
+    const probes = new Map<string, SourceProbe>()
+    const probeOf = (file: SourceFingerprintFile, watermark: number): SourceProbe => {
+      const probe = probeSource(file.path, watermark)
+      probes.set(file.path, probe)
+      return probe
+    }
+
+    /** 该条目本次能否只追加新行（要求上次收录完整，且库内变化通过纯追加判定） */
+    const canAppend = (entry: {
+      file: SourceFingerprintFile
+      previous: StoredSource | null
+    }): boolean => {
+      const previous = entry.previous
+      if (!previous || previous.complete !== 1) return false
+      const probe = probes.get(entry.file.path)
+      return probe !== undefined && isPureAppend(previous, probe)
     }
 
     let grandTotal = 0
+    const accounted = new Set<string>()
+    const accountFor = (entry: {
+      file: SourceFingerprintFile
+      previous: StoredSource | null
+    }): void => {
+      if (accounted.has(entry.file.path)) return
+      accounted.add(entry.file.path)
+      const probe = probes.get(entry.file.path)
+      if (!probe) return
+      grandTotal += canAppend(entry) ? probe.appendedCount : probe.count
+    }
+
     for (const item of toDecode) {
-      grandTotal += measure(item.file)
-      // 大数据量时该查询也是整表扫描，逐文件让出事件循环保持界面响应
+      probeOf(item.file, item.previous?.wm_rowid ?? 0)
+      accountFor(item)
       await nextTick()
     }
 
     // 若某个已存在源的消息数减少（库内发生了删除），此前被它完全覆盖的旧备份可能重新变得需要，
     // 于是把「暂缓」的源补充进来重新解码，保证并集语义不丢数据
-    const decreased = toDecode.some(
-      (item) =>
-        item.previousInserted > 0 &&
-        (counts.get(item.file.path) ?? 0) < item.previousInserted
-    )
+    const decreased = toDecode.some((item) => {
+      const baseline = baselineRows(item.previous)
+      return baseline > 0 && (probes.get(item.file.path)?.count ?? 0) < baseline
+    })
     if (decreased) {
       for (const item of deferred) {
         toDecode.push(item)
-        grandTotal += measure(item.file)
+        probeOf(item.file, item.previous?.wm_rowid ?? 0)
+        accountFor(item)
       }
     } else {
       // 未发生删除：暂缓的源直接沿用缓存中的行
@@ -354,12 +555,21 @@ export async function buildIndex(
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
 
-    // 4. 逐源解码写入
+    // 4. 逐源解码写入；能走行级增量时只解码 rowid 大于水位的部分
     let processed = 0
+    let appendedFiles = 0
+    let appendedMessages = 0
+
     for (const item of toDecode) {
       const label = basename(item.file.path)
+      const probe = probes.get(item.file.path)
+      const incremental = canAppend(item)
+      const watermark = incremental && item.previous ? item.previous.wm_rowid : 0
 
-      cache.prepare('DELETE FROM message WHERE src_id = ?').run(item.id)
+      // 行级增量保留缓存里已有的行；整库重解析先清空该源的历史行
+      if (!incremental) {
+        cache.prepare('DELETE FROM message WHERE src_id = ?').run(item.id)
+      }
       cache
         .prepare(
           `UPDATE source SET fingerprint = ?, rank = ?, inserted_rows = 0,
@@ -371,13 +581,13 @@ export async function buildIndex(
       let inserted = 0
       try {
         db = new Database(item.file.path, { readonly: true, fileMustExist: true })
-        const iterator = db
-          .prepare(
-            `SELECT id, name, chatId, fromId, avatar, type, at, content, timestamp,
-                    mine, withDraw, strDate, messageType
-             FROM message_list ORDER BY timestamp ASC, id ASC`
-          )
-          .iterate() as IterableIterator<MessageRow>
+        // 增量：只用 rowid 主键做范围扫描，几乎不耗时
+        // 整库：沿用「按时间升序」读取，与历史版本行为保持一致
+        const iterator = (
+          watermark > 0
+            ? db.prepare(`${MESSAGE_COLUMNS} WHERE rowid > ? ORDER BY rowid ASC`).iterate(watermark)
+            : db.prepare(`${MESSAGE_COLUMNS} ORDER BY timestamp ASC, id ASC`).iterate()
+        ) as IterableIterator<MessageRow>
 
         cache.exec('BEGIN')
         for (const row of iterator) {
@@ -424,10 +634,39 @@ export async function buildIndex(
         if (db) db.close()
       }
 
-      cache.prepare('UPDATE source SET inserted_rows = ? WHERE id = ?').run(inserted, item.id)
-      if (inserted !== (counts.get(item.file.path) ?? 0)) {
-        // 读取不完整，标记为不完整以便下次重试
-        cache.prepare('UPDATE source SET complete = 0 WHERE id = ?').run(item.id)
+      // 增量时缓存里应当有「上次行数 + 本次新增」，整库时就是本次读到的行数
+      const storedTotal = (incremental ? (item.previous?.wm_count ?? 0) : 0) + inserted
+      cache.prepare('UPDATE source SET inserted_rows = ? WHERE id = ?').run(storedTotal, item.id)
+
+      if (probe && storedTotal === probe.count) {
+        // 解析结果与探测一致：推进水位，下次可继续只追加
+        cache
+          .prepare(
+            `UPDATE source SET wm_count = ?, wm_rowid = ?, wm_sum_rowid = ?,
+               wm_withdrawn = ?, wm_top_id = ? WHERE id = ?`
+          )
+          .run(
+            probe.count,
+            probe.maxRowid,
+            probe.sumRowid,
+            probe.withdrawn,
+            probe.topId,
+            item.id
+          )
+      } else {
+        // 读取不完整，或读取期间源库又发生了变化：清空水位，下次整库重试
+        cache
+          .prepare(
+            `UPDATE source SET complete = 0,
+               wm_count = 0, wm_rowid = 0, wm_sum_rowid = 0, wm_withdrawn = 0, wm_top_id = ''
+             WHERE id = ?`
+          )
+          .run(item.id)
+      }
+
+      if (incremental) {
+        appendedFiles += 1
+        appendedMessages += inserted
       }
       onProgress({ processed, total: grandTotal, phase: 'messages', label })
       await nextTick()
@@ -478,20 +717,31 @@ export async function buildIndex(
     }
 
     // 6. 按消息 ID 去重：优先级更高（src_rank 更小）的源胜出，其次保留写入更早的行
+    //
+    // 「单源 + 本次只是往该源追加了新行」时可以直接跳过：上一轮的去重结果已经落在缓存里，
+    // 追加行的 row_id 只会更大，不可能反过来淘汰已存在的行，因此这一步必然是空操作。
     onProgress({ processed: grandTotal, total: grandTotal, phase: 'dedupe' })
     await nextTick()
 
-    const before = (cache.prepare('SELECT COUNT(*) AS c FROM message').get() as { c: number }).c
-    cache.exec(
-      `DELETE FROM message WHERE EXISTS (
-         SELECT 1 FROM message m2
-         WHERE m2.id = message.id
-           AND (m2.src_rank < message.src_rank
-                OR (m2.src_rank = message.src_rank AND m2.row_id < message.row_id))
-       )`
-    )
+    const skipDedupe =
+      files.length === 1 && toDecode.length > 0 && appendedFiles === toDecode.length
+
+    let duplicateMessages = 0
+    if (!skipDedupe) {
+      const before = (cache.prepare('SELECT COUNT(*) AS c FROM message').get() as { c: number }).c
+      cache.exec(
+        `DELETE FROM message WHERE EXISTS (
+           SELECT 1 FROM message m2
+           WHERE m2.id = message.id
+             AND (m2.src_rank < message.src_rank
+                  OR (m2.src_rank = message.src_rank AND m2.row_id < message.row_id))
+         )`
+      )
+      const afterDedupe = (cache.prepare('SELECT COUNT(*) AS c FROM message').get() as { c: number })
+        .c
+      duplicateMessages = before - afterDedupe
+    }
     const after = (cache.prepare('SELECT COUNT(*) AS c FROM message').get() as { c: number }).c
-    const duplicateMessages = before - after
 
     // 7. 回写各源的去重后行数，并标记数据是否完整
     cache.exec(
@@ -560,7 +810,10 @@ export async function buildIndex(
       duplicateMessages,
       decodedFiles: toDecode.length,
       reusedFiles,
-      incremental: !fresh && reusedFiles > 0,
+      appendedFiles,
+      appendedMessages,
+      decreased,
+      incremental: !fresh && (reusedFiles > 0 || appendedFiles > 0),
       buildMs: Date.now() - startedAt
     }
   } finally {
