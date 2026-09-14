@@ -5,6 +5,7 @@ import { existsSync, rmSync } from 'node:fs'
 import { IPC } from '../../shared/ipc-channels'
 import type { DbSource, IndexStatus } from '../../shared/types'
 import { discoverSources, pickDefaultSource } from '../db/discovery'
+import { rememberSource } from '../config/store'
 import { buildIndex, isCacheValid } from './builder'
 import { cachePathFor, fileSize, fingerprint } from './cache-key'
 import { ChatRepository } from './repository'
@@ -95,6 +96,9 @@ class IndexService {
     const fp = fingerprint(sourcePath)
     const cachePath = cachePathFor(fp)
     const reusable = isCacheValid(cachePath, fp)
+
+    // 记录当前数据源，下次启动优先恢复
+    rememberSource(sourcePath)
 
     this.status = {
       phase: reusable ? 'ready' : 'building',

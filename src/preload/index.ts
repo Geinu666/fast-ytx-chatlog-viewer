@@ -1,6 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/ipc-channels'
-import type { ChatLogApi, ChatQuery, DbSource, IndexStatus, MessageQuery } from '../shared/types'
+import type {
+  AppConfig,
+  ChatLogApi,
+  ChatQuery,
+  DbSource,
+  IndexStatus,
+  MessageQuery
+} from '../shared/types'
 
 /**
  * 通过 contextBridge 暴露白名单 API，渲染层无法直接访问 Node / Electron 能力。
@@ -16,6 +23,13 @@ const api: ChatLogApi = {
     ipcRenderer.on(IPC.indexProgress, listener)
     return () => ipcRenderer.removeListener(IPC.indexProgress, listener)
   },
+
+  getConfig: (): Promise<AppConfig> => ipcRenderer.invoke(IPC.configGet),
+  saveConfig: (config: AppConfig): Promise<AppConfig> =>
+    ipcRenderer.invoke(IPC.configSave, config),
+  defaultDataDirs: (): Promise<string[]> => ipcRenderer.invoke(IPC.configDefaults),
+  pickDataDir: (): Promise<string | null> => ipcRenderer.invoke(IPC.configPickDir),
+  pickDataFile: (): Promise<string | null> => ipcRenderer.invoke(IPC.configPickFile),
 
   listChats: (query: ChatQuery) => ipcRenderer.invoke(IPC.chatList, query),
   chatMeta: (chatId: string) => ipcRenderer.invoke(IPC.chatMeta, chatId),

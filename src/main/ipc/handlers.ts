@@ -1,6 +1,8 @@
-import { clipboard, ipcMain } from 'electron'
+import { BrowserWindow, clipboard, dialog, ipcMain } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import type { ChatQuery, MessageKind, MessageQuery } from '../../shared/types'
+import { loadConfig, saveConfig } from '../config/store'
+import { defaultDataDirs } from '../db/discovery'
 import { ChatRepository } from '../index-cache/repository'
 import { indexService } from '../index-cache/service'
 
@@ -156,5 +158,43 @@ export function registerDataHandlers(): void {
     if (!text) return false
     clipboard.writeText(text)
     return true
+  })
+
+  // ---- 数据源配置 ----
+
+  ipcMain.handle(IPC.configGet, () => loadConfig())
+
+  ipcMain.handle(IPC.configSave, (_event, raw: unknown) => saveConfig(raw))
+
+  ipcMain.handle(IPC.configDefaults, () => defaultDataDirs())
+
+  ipcMain.handle(IPC.configPickDir, async () => {
+    const options: Electron.OpenDialogOptions = {
+      title: '选择聊天记录目录',
+      properties: ['openDirectory']
+    }
+    const win = BrowserWindow.getFocusedWindow()
+    const result = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options)
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
+  })
+
+  ipcMain.handle(IPC.configPickFile, async () => {
+    const options: Electron.OpenDialogOptions = {
+      title: '选择聊天记录数据库',
+      properties: ['openFile'],
+      filters: [
+        { name: '聊天记录数据库', extensions: ['db'] },
+        { name: '全部文件', extensions: ['*'] }
+      ]
+    }
+    const win = BrowserWindow.getFocusedWindow()
+    const result = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options)
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
   })
 }

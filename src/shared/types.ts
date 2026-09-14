@@ -142,6 +142,20 @@ export interface DbSource {
   valid: boolean
   tableCount: number
   error?: string
+  /** 来源：用户配置 / 内置默认目录 */
+  origin: 'configured' | 'default'
+  /** 是否位于猿通讯默认数据目录（%APPDATA%\boctx）下 */
+  inBoctx: boolean
+}
+
+/** 用户可持久化的配置 */
+export interface AppConfig {
+  /** 用户添加的扫描目录（递归扫描） */
+  dataDirs: string[]
+  /** 用户添加的单个数据库文件 */
+  dataFiles: string[]
+  /** 上次使用的数据源，下次启动优先恢复 */
+  lastSource: string | null
 }
 
 /** 索引缓存状态 */
@@ -167,6 +181,12 @@ export interface ChatLogApi {
   indexStatus(): Promise<IndexStatus>
   rebuildIndex(): Promise<IndexStatus>
   onIndexProgress(cb: (status: IndexStatus) => void): () => void
+
+  getConfig(): Promise<AppConfig>
+  saveConfig(config: AppConfig): Promise<AppConfig>
+  defaultDataDirs(): Promise<string[]>
+  pickDataDir(): Promise<string | null>
+  pickDataFile(): Promise<string | null>
 
   listChats(query: ChatQuery): Promise<ChatItem[]>
   chatMeta(chatId: string): Promise<ChatMeta | null>
