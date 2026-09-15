@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Loader2, Search, X } from 'lucide-react'
 import type { MessageItem } from '@shared/types'
-import { chatKindLabel, formatCount, formatDateTime } from '@renderer/lib/format'
+import { chatKindLabel, formatCount, formatMessageTime } from '@renderer/lib/format'
 import { Highlight } from '@renderer/lib/highlight'
 import { useDebouncedValue } from '@renderer/hooks/useDebounce'
 import { useChatStore } from '@renderer/store/useChatStore'
@@ -118,7 +118,7 @@ export function GlobalSearch() {
                   >
                     <span className="flex items-center gap-2 text-micro text-ink-600">
                       <span className="text-ink-400">{item.name || item.fromId}</span>
-                      <span>{formatDateTime(item.timestamp)}</span>
+                      <span>{formatMessageTime(item.timestamp)}</span>
                     </span>
                     <span className="line-clamp-2 whitespace-pre-wrap break-words text-body text-ink-100">
                       <Highlight text={item.text || '[空消息]'} keyword={keyword} />

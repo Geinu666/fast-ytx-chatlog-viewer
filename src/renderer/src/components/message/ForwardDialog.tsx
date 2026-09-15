@@ -4,7 +4,7 @@ import { ChevronLeft, Forward, X } from 'lucide-react'
 import { parseDecoded, type ForwardNode } from '@shared/content'
 import type { MessageItem } from '@shared/types'
 import { Avatar } from '@renderer/components/common/Avatar'
-import { formatDateTime } from '@renderer/lib/format'
+import { formatMessageTime } from '@renderer/lib/format'
 import { localMediaUrl } from '@renderer/lib/localMedia'
 import { useForwardStore } from '@renderer/store/useForwardStore'
 import { useLightboxStore, type LightboxImage } from '@renderer/store/useLightboxStore'
@@ -42,7 +42,7 @@ function ForwardRow({ node, index }: { node: ForwardNode; index: number }) {
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex items-center gap-2 text-micro text-ink-600">
           <span className="max-w-[45%] truncate">{item.name || '未知成员'}</span>
-          <span className="shrink-0">{formatDateTime(item.timestamp)}</span>
+          <span className="shrink-0">{formatMessageTime(item.timestamp)}</span>
         </div>
         <div className="w-fit max-w-full rounded-2xl border border-line/10 bg-surface-800/70 px-3.5 py-2">
           <MessageContent item={item} />
@@ -75,7 +75,7 @@ export function ForwardDialog() {
           src,
           localPath: node.localPath || undefined,
           url: parsed.imageUrl,
-          title: `${node.name || '未知'} · ${formatDateTime(node.timestamp)}`
+          title: `${node.name || '未知'} · ${formatMessageTime(node.timestamp)}`
         }
       })
       .filter((image): image is LightboxImage => image !== null)

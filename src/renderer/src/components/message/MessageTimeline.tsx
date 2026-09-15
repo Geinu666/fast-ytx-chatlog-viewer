@@ -11,7 +11,7 @@ import {
 } from 'lucide-react'
 import { parseMessageContent } from '@shared/content'
 import type { MessageItem } from '@shared/types'
-import { chatKindLabel, formatCount, formatDateLabel, formatDateTime } from '@renderer/lib/format'
+import { chatKindLabel, formatCount, formatDateLabel, formatMessageTime } from '@renderer/lib/format'
 import { cn } from '@renderer/lib/cn'
 import { localMediaUrl } from '@renderer/lib/localMedia'
 import { useChatStore } from '@renderer/store/useChatStore'
@@ -80,7 +80,7 @@ export function MessageTimeline() {
             src,
             localPath: localPath || undefined,
             url: parsed.imageUrl,
-            title: `${item.name || item.fromId || '未知'} · ${formatDateTime(item.timestamp)}`
+            title: `${item.name || item.fromId || '未知'} · ${formatMessageTime(item.timestamp)}`
           }
         })
         .filter((image): image is LightboxImage => image !== null),
@@ -359,7 +359,9 @@ export function MessageTimeline() {
       {highlightId && (
         <div className="flex shrink-0 items-center gap-2 border-t border-line/10 bg-brand-cyan/5 px-4 py-1.5 text-micro text-ink-400">
           已定位到搜索命中消息
-          {highlightTime > 0 && <span className="text-ink-600">{formatDateTime(highlightTime)}</span>}
+          {highlightTime > 0 && (
+            <span className="text-ink-600">{formatMessageTime(highlightTime)}</span>
+          )}
           <button type="button" className="btn ml-auto" onClick={clearHighlight}>
             <X size={11} />
             取消定位

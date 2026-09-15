@@ -2,7 +2,7 @@ import { useCallback, useState, type MouseEvent } from 'react'
 import { parseMessageContent } from '@shared/content'
 import type { MessageItem, SaveImageInput } from '@shared/types'
 import { cn } from '@renderer/lib/cn'
-import { formatClock, formatDateTime } from '@renderer/lib/format'
+import { formatDateTime, formatMessageTime } from '@renderer/lib/format'
 import { suggestImageName } from '@renderer/lib/localMedia'
 import { Avatar } from '@renderer/components/common/Avatar'
 import { ContextMenu, type ContextMenuItem } from '@renderer/components/common/ContextMenu'
@@ -215,7 +215,9 @@ export function MessageBubble({ item, keyword, highlight, showName }: MessageBub
             <MessageContent item={item} keyword={keyword} />
           </div>
 
-          <span className="px-1 text-micro text-ink-600">{formatClock(item.timestamp)}</span>
+          <span className="px-1 text-micro text-ink-600">
+            {formatMessageTime(item.timestamp, { seconds: true })}
+          </span>
         </div>
       </div>
 

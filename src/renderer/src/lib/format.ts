@@ -18,6 +18,29 @@ export function formatDateTime(timestamp: number): string {
   return `${formatDate(timestamp)} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
+/**
+ * 消息时间戳显示：仅当天的消息省略日期，只保留时刻；
+ * 非当天则补齐日期（默认精确到分钟，传 seconds: true 时精确到秒）
+ */
+export function formatMessageTime(
+  timestamp: number,
+  options: { seconds?: boolean } = {}
+): string {
+  const date = new Date(timestamp)
+  const now = new Date()
+  const sameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+
+  const clock = options.seconds
+    ? `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+    : `${pad(date.getHours())}:${pad(date.getMinutes())}`
+
+  if (sameDay) return clock
+  return `${formatDate(timestamp)} ${clock}`
+}
+
 /** 会话列表使用的时间显示：今天显示时刻，今年显示月日，更早显示年月日 */
 export function formatListTime(timestamp: number): string {
   if (!timestamp) return ''
