@@ -1,7 +1,7 @@
 {
   "name": "fast-ytx-chatlog-viewer",
   "productName": "ChatLogViewer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "猿通讯（YuanTX）聊天记录查看器：Windows 桌面端只读解析 SQLite 聊天库，高性能、多维检索、右键复制",
   "main": "./out/main/index.js",
   "author": "fast-ytx",
