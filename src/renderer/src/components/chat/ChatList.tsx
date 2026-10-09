@@ -43,7 +43,7 @@ export function ChatList() {
           <input
             value={chatKeyword}
             onChange={(event) => setChatKeyword(event.target.value)}
-            placeholder="搜索会话名称或消息摘要"
+            placeholder="搜索会话名称、摘要或消息内容"
             className="field pl-7"
           />
         </div>

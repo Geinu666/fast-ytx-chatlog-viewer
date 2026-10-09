@@ -151,9 +151,15 @@ export class ChatRepository {
 
     const keyword = cleanText(query.keyword)
     if (keyword) {
-      clauses.push("(name LIKE ? ESCAPE '\\' OR last_preview LIKE ? ESCAPE '\\')")
+      // 除会话名与摘要外也检索消息正文：群聊里聊过的关键词往往不在会话名中，
+      // 只匹配 name / last_preview 会导致这类会话完全搜不到。
+      // EXISTS 走 idx_msg_chat_ts 的 chat_id 前缀，命中即返回。
+      clauses.push(
+        "(name LIKE ? ESCAPE '\\' OR last_preview LIKE ? ESCAPE '\\' " +
+          "OR EXISTS (SELECT 1 FROM message m WHERE m.chat_id = chat.id AND m.text LIKE ? ESCAPE '\\'))"
+      )
       const pattern = likePattern(keyword)
-      params.push(pattern, pattern)
+      params.push(pattern, pattern, pattern)
     }
 
     switch (query.scope) {
