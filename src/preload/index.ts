@@ -62,6 +62,8 @@ const api: ChatLogApi = {
     minimize: (): void => ipcRenderer.send(IPC.winMinimize),
     toggleMaximize: (): void => ipcRenderer.send(IPC.winToggleMaximize),
     close: (): void => ipcRenderer.send(IPC.winClose),
+    // 真正退出应用（不受「关闭时最小化到托盘」拦截）
+    quit: (): void => ipcRenderer.send(IPC.winQuit),
     isMaximized: (): Promise<boolean> => ipcRenderer.invoke(IPC.winIsMaximized),
     onMaximizeChange: (cb: (maximized: boolean) => void): (() => void) => {
       const listener = (_event: unknown, maximized: boolean): void => cb(maximized)

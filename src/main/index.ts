@@ -5,6 +5,7 @@ import { IPC } from '../shared/ipc-channels'
 import { registerDataHandlers } from './ipc/handlers'
 import { indexService } from './index-cache/service'
 import { registerMediaProtocol, registerMediaScheme } from './media/protocol'
+import { createAppTray, hideToTray, isQuitting, markQuitting, quitApp, trayReady } from './tray'
 
 let windowHandlersRegistered = false
 
@@ -46,6 +47,13 @@ function createWindow(): BrowserWindow {
 
   win.on('ready-to-show', () => win.show())
 
+  // 关闭按钮最小化到托盘：托盘可用时只隐藏窗口，真正退出走托盘菜单 / win:quit
+  win.on('close', (event) => {
+    if (isQuitting() || !trayReady()) return
+    event.preventDefault()
+    hideToTray(win)
+  })
+
   const notifyMaximize = (): void => {
     if (!win.isDestroyed()) win.webContents.send(IPC.winMaximizeChange, win.isMaximized())
   }
@@ -81,6 +89,7 @@ function registerWindowHandlers(): void {
     else win.maximize()
   })
   ipcMain.on(IPC.winClose, () => getMainWindow()?.close())
+  ipcMain.on(IPC.winQuit, () => quitApp())
   ipcMain.handle(IPC.winIsMaximized, () => getMainWindow()?.isMaximized() ?? false)
 }
 
@@ -95,6 +104,8 @@ if (!gotLock) {
     const win = getMainWindow()
     if (win) {
       if (win.isMinimized()) win.restore()
+      // 可能正处于「已隐藏到托盘」状态，需显式唤回
+      if (!win.isVisible()) win.show()
       win.focus()
     }
   })
@@ -105,6 +116,7 @@ if (!gotLock) {
     registerMediaProtocol()
 
     const win = createWindow()
+    createAppTray(win, resolveIconPath())
     registerWindowHandlers()
     registerDataHandlers()
 
@@ -120,11 +132,23 @@ if (!gotLock) {
     else win.once('ready-to-show', startIndex)
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+      const current = getMainWindow()
+      if (!current) {
+        createWindow()
+        return
+      }
+      // 隐藏到托盘时不重建窗口，直接唤回
+      if (current.isMinimized()) current.restore()
+      current.show()
+      current.focus()
     })
   })
 
+  // 系统级退出（任务栏「关闭窗口」、系统关机等）也需放行 close 拦截
+  app.on('before-quit', () => markQuitting())
+
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit()
+    // 托盘可用时关闭只是隐藏，进程由托盘常驻；仅在托盘创建失败时沿用默认退出行为
+    if (process.platform !== 'darwin' && !trayReady()) app.quit()
   })
 }

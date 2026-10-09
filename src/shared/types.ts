@@ -303,6 +303,8 @@ export interface ChatLogApi {
     minimize(): void
     toggleMaximize(): void
     close(): void
+    /** 真正退出应用，不受「关闭时最小化到托盘」影响 */
+    quit(): void
     isMaximized(): Promise<boolean>
     onMaximizeChange(cb: (maximized: boolean) => void): () => void
   }

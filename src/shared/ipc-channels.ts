@@ -27,6 +27,7 @@ export const IPC = {
   winMinimize: 'win:minimize',
   winToggleMaximize: 'win:toggleMaximize',
   winClose: 'win:close',
+  winQuit: 'win:quit',
   winIsMaximized: 'win:isMaximized',
   winMaximizeChange: 'win:maximizeChange'
 } as const
