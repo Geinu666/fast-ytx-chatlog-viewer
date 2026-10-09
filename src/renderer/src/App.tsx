@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { AlertTriangle, Loader2 } from 'lucide-react'
+import { AlertTriangle, FilePlus2, FolderOpen, Loader2 } from 'lucide-react'
 import { formatCount } from './lib/format'
 import { ChatList } from './components/chat/ChatList'
 import { Toast } from './components/common/Toast'
@@ -20,6 +20,8 @@ import { useUiStore } from './store/useUiStore'
 
 export default function App() {
   const init = useIndexStore((state) => state.init)
+  const addDataDir = useIndexStore((state) => state.addDataDir)
+  const addDataFile = useIndexStore((state) => state.addDataFile)
   const status = useIndexStore((state) => state.status)
   // 索引每次真正构建后 revision 自增，据此重新拉取会话列表（新消息 / 预览）
   const revision = useIndexStore((state) => state.status?.revision ?? 0)
@@ -112,10 +114,35 @@ export default function App() {
             )}
 
             {failed && (
-              <p className="mt-3.5 text-micro leading-5 text-ink-600">
-                请在右上角「数据源」中确认扫描目录，或用「添加文件 / 添加目录」手动指定
-                聊天记录位置（猿通讯默认存放于 %APPDATA%\boctx）。
-              </p>
+              <>
+                {/* 路径失效或目录内没有可用库时，必须给出可操作的出口，否则界面等同锁死 */}
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => void addDataDir()}
+                  >
+                    <FolderOpen size={13} />
+                    选择目录
+                  </button>
+                  <button type="button" className="btn" onClick={() => void addDataFile()}>
+                    <FilePlus2 size={13} />
+                    选择文件
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  className="btn mt-2 w-full"
+                  onClick={() => window.api.window.quit()}
+                >
+                  退出程序
+                </button>
+
+                <p className="mt-3.5 text-micro leading-5 text-ink-600">
+                  猿通讯聊天记录默认存放于 %APPDATA%\boctx，也可在右上角「数据源」中调整。
+                </p>
+              </>
             )}
           </div>
         </div>
