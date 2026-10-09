@@ -24,6 +24,7 @@ Thumbs.db
 
 # 工具内部状态
 .codebuddy/
+.zcode/
 
 # 归档文件（非源码）
 *.7z
